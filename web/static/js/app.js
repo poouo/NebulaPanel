@@ -72,6 +72,8 @@ zh: {
   general: '常规设置', site_name: '站点名称',
   panel_host: '面板地址（用于Agent脚本，如 your-domain.com:3001）',
   allow_register: '允许注册', comm_key: '通信密钥',
+  login_lockout: '登录锁定', lockout_enabled: '启用失败锁定', lockout_threshold: '连续失败次数', lockout_minutes: '锁定时长（分钟）',
+  lockout_desc: '同一账号与 IP 连续失败达到阈值后将被临时禁止登录，默认关闭，最大锁定 1 天。24小时=1440分钟。',
   comm_key_desc: '所有Agent使用此密钥进行AES-256-GCM加密通信。修改后需重新部署所有Agent。',
   data_management: '数据管理', export_data: '导出数据', import_data: '导入数据',
   import_confirm: '导入将覆盖所有现有数据，确定继续？',
@@ -143,6 +145,8 @@ en: {
   general: 'General', site_name: 'Site Name',
   panel_host: 'Panel Host (for Agent script, e.g. your-domain.com:3001)',
   allow_register: 'Allow Registration', comm_key: 'Communication Key',
+  login_lockout: 'Login Lockout', lockout_enabled: 'Lock after failures', lockout_threshold: 'Failure threshold', lockout_minutes: 'Lock duration (min)',
+  lockout_desc: 'Temporarily block a username+IP pair after this many consecutive failed logins. Disabled by default. Max duration is 1 day (1440 minutes).',
   comm_key_desc: 'All agents use this key for AES-256-GCM encrypted communication. Changing it requires re-deploying all agents.',
   data_management: 'Data Management', export_data: 'Export Data', import_data: 'Import Data',
   import_confirm: 'This will overwrite all existing data. Continue?',
@@ -398,6 +402,10 @@ function render() {
 
 // ── Login ──
 let loginMode = 'login';
+// Preserve the username across failed login attempts so the user doesn't have
+// to retype it every time (requested by UX). We persist it in localStorage so
+// it also survives a page reload.
+let lastLoginUser = (function(){ try { return localStorage.getItem('np_last_user') || ''; } catch(_){ return ''; } })();
 let captchaId = '', captchaSvg = '', needCaptcha = false;
 
 async function loadCaptcha() {
@@ -413,7 +421,7 @@ function renderLogin(app) {
     <h1>NebulaPanel</h1>
     <p class="subtitle">${isReg ? t('sign_up') : t('sign_in')}</p>
     <form id="authForm">
-      <div class="form-group"><label>${t('username')}</label><input class="form-control" id="authUser" placeholder="${t('username')}" required minlength="3"></div>
+      <div class="form-group"><label>${t('username')}</label><input class="form-control" id="authUser" placeholder="${t('username')}" required minlength="3" value="${escHtml(lastLoginUser||'')}" autocomplete="username"></div>
       <div class="form-group"><label>${t('password')}</label>
         <div style="position:relative">
           <input class="form-control" id="authPass" type="password" placeholder="${t('password')}" required minlength="6" style="padding-right:42px">
@@ -467,6 +475,9 @@ function renderLogin(app) {
     const user = document.getElementById('authUser').value.trim();
     const pass = document.getElementById('authPass').value;
     const cap = document.getElementById('authCaptcha')?.value?.trim() || '';
+    // Remember the latest username for the next login attempt.
+    lastLoginUser = user;
+    try { localStorage.setItem('np_last_user', user); } catch(_) {}
     try {
       // Hash password client-side so plaintext never touches the wire / server.
       const clientHash = await sha256Hex(pass);
@@ -490,9 +501,27 @@ function renderLogin(app) {
         toast(t('welcome_back') + d.username, 'success'); state.page = 'dashboard'; render();
       }
     } catch(err) {
+      // Do NOT re-render the whole form (which would wipe the typed username).
+      // Only clear the password and refresh the captcha if the server now
+      // requires one.
       toast(err.message, 'error');
+      const passInput = document.getElementById('authPass');
+      if (passInput) { passInput.value = ''; passInput.focus(); }
+      const prevNeed = needCaptcha;
       await checkNeedCaptcha();
-      if (needCaptcha) { await loadCaptcha(); render(); }
+      if (needCaptcha) {
+        await loadCaptcha();
+        if (!prevNeed) {
+          // Captcha now required but was not before: reveal the captcha row
+          // in place without destroying the username/password fields.
+          const area = document.getElementById('captchaArea');
+          if (area) area.style.display = 'block';
+        }
+        const img = document.getElementById('captchaImg');
+        if (img) img.innerHTML = captchaSvg;
+        const capInput = document.getElementById('authCaptcha');
+        if (capInput) capInput.value = '';
+      }
     }
   };
 }
@@ -1031,6 +1060,24 @@ async function renderSettings(el) {
     </div>
     <p style="font-size:12px;color:var(--text-dim);margin-top:4px">${t('comm_key_desc')}</p>
   </div>`;
+  // Login lockout card
+  const lkEn = (settings.lockout_enabled === 'true');
+  const lkTh = parseInt(settings.lockout_threshold || '5', 10) || 5;
+  const lkMin = parseInt(settings.lockout_minutes || '10', 10) || 10;
+  html += `<div class="card"><div class="card-header"><h3>${t('login_lockout')}</h3></div>
+    <div class="form-row">
+      <div class="form-group"><label>${t('lockout_enabled')}</label>
+        <label class="toggle"><input type="checkbox" id="sLockEnabled" ${lkEn?'checked':''}><span class="slider"></span></label>
+      </div>
+      <div class="form-group"><label>${t('lockout_threshold')}</label>
+        <input class="form-control" id="sLockTh" type="number" min="1" max="100" value="${lkTh}">
+      </div>
+    </div>
+    <div class="form-group"><label>${t('lockout_minutes')} <span style="color:var(--text-dim);font-weight:400">(1 - 1440)</span></label>
+      <input class="form-control" id="sLockMin" type="number" min="1" max="1440" value="${lkMin}">
+    </div>
+    <p style="font-size:12px;color:var(--text-dim);margin-top:-4px">${t('lockout_desc')}</p>
+  </div>`;
   html += `<div class="card"><div class="card-header"><h3>${t('data_management')}</h3></div>
     <div class="btn-group">
       <button class="btn btn-primary" id="exportBtn">${t('export_data')}</button>
@@ -1040,7 +1087,19 @@ async function renderSettings(el) {
   el.innerHTML = html;
 
   document.getElementById('saveSettingsBtn').onclick = async () => {
-    const data = { site_name: document.getElementById('sSiteName').value.trim(), panel_host: document.getElementById('sPanelHost').value.trim(), allow_register: document.getElementById('sAllowReg').value, comm_key: document.getElementById('sCommKey').value.trim() };
+    let lockTh = parseInt(document.getElementById('sLockTh').value, 10);
+    if (isNaN(lockTh) || lockTh < 1) lockTh = 5; if (lockTh > 100) lockTh = 100;
+    let lockMin = parseInt(document.getElementById('sLockMin').value, 10);
+    if (isNaN(lockMin) || lockMin < 1) lockMin = 10; if (lockMin > 1440) lockMin = 1440;
+    const data = {
+      site_name: document.getElementById('sSiteName').value.trim(),
+      panel_host: document.getElementById('sPanelHost').value.trim(),
+      allow_register: document.getElementById('sAllowReg').value,
+      comm_key: document.getElementById('sCommKey').value.trim(),
+      lockout_enabled: document.getElementById('sLockEnabled').checked ? 'true' : 'false',
+      lockout_threshold: String(lockTh),
+      lockout_minutes: String(lockMin),
+    };
     await api('PUT', '/api/settings', data); toast(t('settings_saved'), 'success');
   };
   document.getElementById('exportBtn').onclick = async () => {

@@ -47,6 +47,9 @@ func main() {
 	// 启动验证码失败记录清理器
 	captcha.StartFailCleaner()
 
+	// 启动登录锁定记录清理器
+	auth.StartLockoutCleaner()
+
 	// 启动流量重置检查器
 	startTrafficResetChecker()
 
@@ -91,9 +94,12 @@ func initCommKey() {
 
 	// 默认设置
 	defaults := map[string]string{
-		"site_name":      "NebulaPanel",
-		"allow_register": "true",
-		"panel_host":     "",
+		"site_name":        "NebulaPanel",
+		"allow_register":   "true",
+		"panel_host":       "",
+		"lockout_enabled":  "false", // opt-in; disabled by default
+		"lockout_threshold": "5",    // consecutive failures
+		"lockout_minutes":  "10",    // lock duration (max 1440)
 	}
 	for k, v := range defaults {
 		var val string
@@ -108,11 +114,20 @@ func ensureAdmin(username, password string) {
 	var count int
 	db.DB.QueryRow("SELECT COUNT(*) FROM users WHERE role='admin'").Scan(&count)
 	if count == 0 {
-		hash, _ := auth.HashPassword(password)
+		// Store password using the same chain as register/change-password:
+		// bcrypt(SHA-256(plain)). This way new client-hash and challenge-response
+		// logins work without needing a one-time "legacy plaintext" login first.
+		ch := auth.SHA256Hex(password)
+		hash, _ := auth.HashClientHash(ch)
 		subToken := auth.GenerateSubToken()
-		db.DB.Exec(
+		res, err := db.DB.Exec(
 			`INSERT INTO users (username, password, role, sub_token) VALUES (?, ?, 'admin', ?)`,
 			username, hash, subToken)
+		if err == nil {
+			if uid, ierr := res.LastInsertId(); ierr == nil {
+				_ = auth.SaveVerifier(int(uid), ch)
+			}
+		}
 		log.Printf("[Init] Default admin created: %s / %s", username, password)
 		logger.Infof("System", "Default admin created: %s", username)
 	}

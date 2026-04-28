@@ -165,11 +165,42 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	ip := getClientIP(r)
 
+	// Account lockout (opt-in): reject immediately when the caller is within
+	// a temporary ban window. Even the valid password cannot unlock it until
+	// the window expires. Responses carry a standard Retry-After header.
+	if locked, retry := auth.CheckLocked(req.Username, ip); locked {
+		logger.Warnf("Auth", "Login blocked by lockout: %s from %s (retry=%ds)", req.Username, ip, retry)
+		w.Header().Set("Retry-After", strconv.Itoa(retry))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"code": -1, "message": "account temporarily locked, try later",
+			"locked": true, "retry_after": retry,
+		})
+		return
+	}
+
 	// 如果该 IP 需要验证码，则校验
 	if captcha.NeedCaptcha(ip) {
 		if !captcha.Verify(req.CaptchaID, req.Captcha) {
 			logger.Warnf("Auth", "Login captcha failed: %s from %s", req.Username, ip)
-			jsonError(w, "captcha verification failed", http.StatusBadRequest)
+			// Count captcha failures toward the lockout threshold so the
+			// policy still applies when a captcha is being shown.
+			locked, retry := auth.RecordLoginFailure(req.Username, ip)
+			w.Header().Set("Content-Type", "application/json")
+			if locked {
+				w.Header().Set("Retry-After", strconv.Itoa(retry))
+				w.WriteHeader(http.StatusTooManyRequests)
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"code": -1, "message": "too many failed attempts, account temporarily locked",
+					"locked": true, "retry_after": retry,
+				})
+				return
+			}
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"code": -1, "message": "captcha verification failed",
+			})
 			return
 		}
 	}
@@ -207,14 +238,21 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 			_ = auth.SaveVerifier(id, req.ClientHash)
 		}
 	}
-	// Mode C (legacy): plaintext password directly bcrypt-checked.
+	// Mode C (legacy): plaintext password. We accept both storage chains:
+	//   - bcrypt(plain)       (databases pre-v2)
+	//   - bcrypt(sha256(p))  (databases seeded by v2+)
 	if !ok && req.Password != "" {
 		if auth.CheckPassword(req.Password, hash) {
 			ok = true
-			// migrate to client-hash chain transparently
 			ch := auth.SHA256Hex(req.Password)
 			if newHash, herr := auth.HashClientHash(ch); herr == nil {
 				db.DB.Exec("UPDATE users SET password=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", newHash, id)
+				_ = auth.SaveVerifier(id, ch)
+			}
+		} else {
+			ch := auth.SHA256Hex(req.Password)
+			if auth.CheckClientHash(ch, hash) {
+				ok = true
 				_ = auth.SaveVerifier(id, ch)
 			}
 		}
@@ -222,9 +260,19 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	if !ok {
 		captcha.RecordFail(ip)
+		locked, retry := auth.RecordLoginFailure(req.Username, ip)
 		logger.Warnf("Auth", "Login failed (wrong password): %s from %s", req.Username, ip)
 		need := captcha.NeedCaptcha(ip)
 		w.Header().Set("Content-Type", "application/json")
+		if locked {
+			w.Header().Set("Retry-After", strconv.Itoa(retry))
+			w.WriteHeader(http.StatusTooManyRequests)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"code": -1, "message": "too many failed attempts, account temporarily locked",
+				"locked": true, "retry_after": retry, "need_captcha": need,
+			})
+			return
+		}
 		w.WriteHeader(http.StatusUnauthorized)
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"code": -1, "message": "invalid credentials", "need_captcha": need,
@@ -238,6 +286,7 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	captcha.ClearFail(ip)
+	auth.RecordLoginSuccess(req.Username, ip)
 	token, _ := auth.GenerateToken(id, req.Username, role)
 	logger.Infof("Auth", "User logged in: %s from %s", req.Username, ip)
 	jsonOK(w, map[string]interface{}{"token": token, "role": role, "username": req.Username})
@@ -1288,6 +1337,33 @@ func handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for k, v := range req {
+		v = strings.TrimSpace(v)
+		switch k {
+		case "lockout_enabled":
+			if !strings.EqualFold(v, "true") {
+				v = "false"
+			} else {
+				v = "true"
+			}
+		case "lockout_threshold":
+			n, err := strconv.Atoi(v)
+			if err != nil || n < 1 {
+				n = 5
+			}
+			if n > 100 {
+				n = 100
+			}
+			v = strconv.Itoa(n)
+		case "lockout_minutes":
+			n, err := strconv.Atoi(v)
+			if err != nil || n < 1 {
+				n = 10
+			}
+			if n > 1440 { // 24 hours cap
+				n = 1440
+			}
+			v = strconv.Itoa(n)
+		}
 		db.DB.Exec("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", k, v)
 	}
 	logger.Info("Admin", "Settings updated")
