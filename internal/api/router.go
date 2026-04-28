@@ -42,10 +42,7 @@ func NewRouter() http.Handler {
 
 	// Agent 管理 (admin)
 	mux.HandleFunc("GET /api/agents", adminWrap(handleListAgents))
-	mux.HandleFunc("POST /api/agents", adminWrap(handleCreateAgent))
-	mux.HandleFunc("PUT /api/agents/{id}", adminWrap(handleUpdateAgent))
 	mux.HandleFunc("DELETE /api/agents/{id}", adminWrap(handleDeleteAgent))
-	mux.HandleFunc("GET /api/agents/install-script", adminWrap(handleGetInstallScript))
 
 	// 订阅模板 (admin)
 	mux.HandleFunc("GET /api/templates", adminWrap(handleListTemplates))

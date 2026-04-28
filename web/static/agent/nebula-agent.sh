@@ -23,8 +23,6 @@ log() {
 }
 
 # ── Encryption using OpenSSL ──
-# AES-256-GCM encryption with PBKDF2 key derivation
-# Format: base64(salt + nonce + ciphertext + tag)
 encrypt_payload() {
     local plaintext="$1"
     local key="$COMM_KEY"
@@ -38,10 +36,9 @@ encrypt_payload() {
     local salt=$(openssl rand -hex 16)
     local nonce=$(openssl rand -hex 12)
 
-    # Derive key using PBKDF2
+    # Derive key using HMAC-SHA256
     local derived_key=$(echo -n "$key" | xxd -r -p | openssl dgst -sha256 -mac HMAC -macopt hexkey:${salt} 2>/dev/null | awk '{print $NF}')
     if [ -z "$derived_key" ]; then
-        # Fallback: use key directly with salt hash
         derived_key=$(echo -n "${salt}${key}" | openssl dgst -sha256 2>/dev/null | awk '{print $NF}')
     fi
 
@@ -58,16 +55,12 @@ encrypt_payload() {
         xxd -p | tr -d '\n')
 
     if [ -z "$encrypted" ]; then
-        # Fallback: use AES-256-CBC if GCM not available
         encrypted=$(echo -n "$payload_hex" | xxd -r -p | \
             openssl enc -aes-256-cbc -nosalt -K "$derived_key" -iv "${nonce}00000000" 2>/dev/null | \
             xxd -p | tr -d '\n')
     fi
 
-    # Combine: salt + nonce + encrypted
     local combined="${salt}${nonce}${encrypted}"
-
-    # Base64 encode
     echo -n "$combined" | xxd -r -p | base64 -w 0
 }
 
@@ -82,6 +75,10 @@ get_mem_usage() {
     echo "$mem"
 }
 
+get_mem_total() {
+    free -b 2>/dev/null | awk '/Mem:/ {print $2}' || echo "0"
+}
+
 get_net_stats() {
     local iface=$(ip route | grep default | awk '{print $5}' | head -1)
     if [ -z "$iface" ]; then iface="eth0"; fi
@@ -94,19 +91,43 @@ get_uptime_seconds() {
     awk '{print int($1)}' /proc/uptime 2>/dev/null || echo "0"
 }
 
-get_hostname() {
-    hostname -I 2>/dev/null | awk '{print $1}' || hostname 2>/dev/null || echo "unknown"
+get_hostname_info() {
+    hostname 2>/dev/null || echo "unknown"
+}
+
+get_host_ip() {
+    hostname -I 2>/dev/null | awk '{print $1}' || echo ""
+}
+
+get_os_info() {
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        echo "${PRETTY_NAME:-$ID $VERSION_ID}"
+    else
+        uname -s 2>/dev/null || echo "unknown"
+    fi
+}
+
+get_arch_info() {
+    uname -m 2>/dev/null || echo "unknown"
 }
 
 # ── Send Heartbeat ──
 send_heartbeat() {
-    local host=$(get_hostname)
+    local hostname_val=$(get_hostname_info)
+    local host_ip=$(get_host_ip)
     local cpu=$(get_cpu_usage)
     local mem=$(get_mem_usage)
+    local mem_total=$(get_mem_total)
     local net=($(get_net_stats))
-    local uptime=$(get_uptime_seconds)
+    local uptime_val=$(get_uptime_seconds)
+    local os_info=$(get_os_info)
+    local arch_info=$(get_arch_info)
 
-    local payload="{\"host\":\"${host}\",\"cpu\":${cpu:-0},\"mem\":${mem:-0},\"net_in\":${net[0]:-0},\"net_out\":${net[1]:-0},\"uptime\":${uptime:-0},\"version\":\"${AGENT_VERSION}\"}"
+    # Use IP as host identifier
+    local host_id="${host_ip:-${hostname_val}}"
+
+    local payload="{\"hostname\":\"${hostname_val}\",\"host\":\"${host_id}\",\"cpu\":${cpu:-0},\"mem\":${mem:-0},\"mem_total\":${mem_total:-0},\"net_in\":${net[0]:-0},\"net_out\":${net[1]:-0},\"uptime\":${uptime_val:-0},\"version\":\"${AGENT_VERSION}\",\"os\":\"${os_info}\",\"arch\":\"${arch_info}\"}"
 
     local encrypted=$(encrypt_payload "$payload")
     if [ -z "$encrypted" ]; then
@@ -120,7 +141,7 @@ send_heartbeat() {
         "${PANEL_URL}/api/agent/heartbeat" 2>/dev/null)
 
     if echo "$response" | grep -q '"code":0'; then
-        log "Heartbeat sent successfully (CPU: ${cpu}%, MEM: ${mem}%)"
+        log "Heartbeat OK (Host: ${hostname_val}, IP: ${host_id}, CPU: ${cpu}%, MEM: ${mem}%)"
     else
         log "ERROR: Heartbeat failed: $response"
     fi
@@ -138,7 +159,6 @@ main() {
         exit 1
     fi
 
-    local hb_counter=0
     while true; do
         send_heartbeat
         sleep "$HEARTBEAT_INTERVAL"

@@ -763,25 +763,52 @@ func handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var hb struct {
+		Hostname string  `json:"hostname"`
 		Host     string  `json:"host"`
 		CPU      float64 `json:"cpu"`
 		Mem      float64 `json:"mem"`
+		MemTotal int64   `json:"mem_total"`
 		NetIn    int64   `json:"net_in"`
 		NetOut   int64   `json:"net_out"`
 		Uptime   int     `json:"uptime"`
 		Version  string  `json:"version"`
+		OS       string  `json:"os"`
+		Arch     string  `json:"arch"`
 	}
 	if err := json.Unmarshal(plaintext, &hb); err != nil {
 		jsonError(w, "invalid heartbeat data", http.StatusBadRequest)
 		return
 	}
-
-	db.DB.Exec(
-		`UPDATE agents SET status='online', cpu_usage=?, mem_usage=?, net_in=?, net_out=?,
-		 uptime=?, version=?, last_heartbeat=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
-		 WHERE host=?`,
-		hb.CPU, hb.Mem, hb.NetIn, hb.NetOut, hb.Uptime, hb.Version, hb.Host)
-
+	// Use client IP if host not provided
+	if hb.Host == "" {
+		hb.Host = getClientIP(r)
+	}
+	if hb.Hostname == "" {
+		hb.Hostname = hb.Host
+	}
+	// Auto-register: check if agent exists, if not create it
+	var agentID int
+	err = db.DB.QueryRow("SELECT id FROM agents WHERE host=?", hb.Host).Scan(&agentID)
+	if err != nil {
+		// Agent not found, auto-register
+		result, insertErr := db.DB.Exec(
+			`INSERT INTO agents (name, host, port, status, version, cpu_usage, mem_usage, net_in, net_out, uptime, last_heartbeat)
+			 VALUES (?, ?, 9527, 'online', ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+			hb.Hostname, hb.Host, hb.Version, hb.CPU, hb.Mem, hb.NetIn, hb.NetOut, hb.Uptime)
+		if insertErr == nil {
+			newID, _ := result.LastInsertId()
+			logger.Infof("Agent", "Auto-registered new agent: %s (%s) id=%d", hb.Hostname, hb.Host, newID)
+		} else {
+			logger.Warnf("Agent", "Failed to auto-register agent %s: %v", hb.Host, insertErr)
+		}
+	} else {
+		// Agent exists, update
+		db.DB.Exec(
+			`UPDATE agents SET name=?, status='online', cpu_usage=?, mem_usage=?, net_in=?, net_out=?,
+			 uptime=?, version=?, last_heartbeat=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+			 WHERE host=?`,
+			hb.Hostname, hb.CPU, hb.Mem, hb.NetIn, hb.NetOut, hb.Uptime, hb.Version, hb.Host)
+	}
 	respData, _ := crypto.Encrypt([]byte(`{"status":"ok"}`), commKey)
 	jsonOK(w, map[string]string{"data": respData})
 }

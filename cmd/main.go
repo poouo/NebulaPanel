@@ -38,6 +38,8 @@ func main() {
 
 	// 创建默认管理员
 	ensureAdmin(adminUser, adminPass)
+	// 创建默认订阅模板
+	ensureDefaultTemplates()
 
 	// 启动日志清理器（保留30天）
 	logger.StartLogCleaner()
@@ -164,4 +166,64 @@ func startTrafficLogCleaner() {
 			time.Sleep(24 * time.Hour)
 		}
 	}()
+}
+
+// 创建默认订阅模板（如果不存在）
+func ensureDefaultTemplates() {
+	var count int
+	db.DB.QueryRow("SELECT COUNT(*) FROM sub_templates").Scan(&count)
+	if count > 0 {
+		return
+	}
+
+	clashTemplate := "# NebulaPanel - Clash/Mihomo Default Template\n" +
+		"# Variables: {{PROXIES}} = proxy list, {{PROXY_NAMES}} = proxy name list\n\n" +
+		"mixed-port: 7890\n" +
+		"allow-lan: false\n" +
+		"bind-address: '*'\n" +
+		"mode: rule\n" +
+		"log-level: info\n" +
+		"unified-delay: true\n" +
+		"external-controller: 127.0.0.1:9090\n\n" +
+		"dns:\n" +
+		"  enable: true\n" +
+		"  listen: 0.0.0.0:53\n" +
+		"  enhanced-mode: fake-ip\n" +
+		"  fake-ip-range: 198.18.0.1/16\n" +
+		"  nameserver:\n" +
+		"    - 223.5.5.5\n" +
+		"    - 119.29.29.29\n" +
+		"  fallback:\n" +
+		"    - 8.8.8.8\n" +
+		"    - 1.1.1.1\n" +
+		"  fallback-filter:\n" +
+		"    geoip: true\n" +
+		"    geoip-code: CN\n\n" +
+		"proxies:\n" +
+		"{{PROXIES}}\n\n" +
+		"proxy-groups:\n" +
+		"  - name: Proxy\n" +
+		"    type: select\n" +
+		"    proxies:\n" +
+		"      - Auto\n" +
+		"      - DIRECT\n" +
+		"{{PROXY_NAMES}}\n\n" +
+		"  - name: Auto\n" +
+		"    type: url-test\n" +
+		"    url: http://www.gstatic.com/generate_204\n" +
+		"    interval: 300\n" +
+		"    tolerance: 50\n" +
+		"    proxies:\n" +
+		"{{PROXY_NAMES}}\n\n" +
+		"rules:\n" +
+		"  - GEOIP,LAN,DIRECT\n" +
+		"  - GEOIP,CN,DIRECT\n" +
+		"  - MATCH,Proxy\n"
+
+	db.DB.Exec(
+		"INSERT INTO sub_templates (name, content, format, is_default) VALUES (?, ?, 'clash', 1)",
+		"Default Clash Template", clashTemplate)
+
+	log.Println("[Init] Default Clash subscription template created")
+	logger.Info("System", "Default Clash subscription template created")
 }

@@ -619,8 +619,7 @@ function showNodeModal(node) {
 async function renderAgents(el) {
   const agents = await api('GET', '/api/agents');
   let html = `<div class="topbar"><h2>${t('agents')}</h2><div class="topbar-actions">
-    <button class="btn btn-outline" id="showScriptBtn">${t('install_script')}</button>
-    <button class="btn btn-primary" id="addAgentBtn">+ ${t('add_agent')}</button>
+    <button class="btn btn-primary" id="showScriptBtn">${t('install_script')}</button>
   </div></div>`;
   html += `<div class="card"><div class="table-wrap"><table>
     <thead><tr><th>ID</th><th>${t('name')}</th><th>${t('host')}</th><th>${t('status')}</th><th>${t('cpu')}</th><th>${t('memory')}</th><th>${t('net_in_out')}</th><th>${t('uptime')}</th><th>${t('last_hb')}</th><th>${t('actions')}</th></tr></thead>
@@ -632,56 +631,46 @@ async function renderAgents(el) {
       <td>${a.uptime > 0 ? Math.floor(a.uptime/3600)+'h' : '-'}</td>
       <td style="font-size:12px">${a.last_heartbeat||'-'}</td>
       <td><div class="btn-group">
-        <button class="btn btn-sm btn-outline" onclick="editAgent(${a.id})">${t('edit')}</button>
         <button class="btn btn-sm btn-danger" onclick="deleteAgent(${a.id})">${t('del')}</button>
       </div></td></tr>`).join('')}${agents.length===0?`<tr><td colspan="10" class="empty">${t('no_data')}</td></tr>`:''}</tbody></table></div></div>`;
   el.innerHTML = html;
-  document.getElementById('addAgentBtn').onclick = () => showAgentModal();
   document.getElementById('showScriptBtn').onclick = async () => {
-    let mhtml = `<div class="modal-overlay" id="modalOverlay"><div class="modal" style="max-width:700px">
-      <div class="modal-header"><h3>${t('install_script')}</h3><button class="btn-icon" onclick="closeModal()">&times;</button></div>
+    // 获取真实的通信密钥
+    let commKey = '';
+    try {
+      const settings = await api('GET', '/api/settings');
+      commKey = settings.comm_key || '';
+    } catch(e) { commKey = 'YOUR_COMM_KEY'; }
+    const ghUrl = 'https://raw.githubusercontent.com/poouo/NebulaPanel/main/agent/install.sh';
+    const panelUrl = location.origin;
+    const installCmd = `bash <(curl -sL --connect-timeout 15 ${ghUrl} || curl -sL ${panelUrl}/static/agent/install.sh) install ${panelUrl} ${commKey}`;
+    const uninstallCmd = `bash <(curl -sL --connect-timeout 15 ${ghUrl} || curl -sL ${panelUrl}/static/agent/install.sh) uninstall`;
+    let mhtml = `<div class="modal-overlay" id="modalOverlay"><div class="modal" style="max-width:750px">
+      <div class="modal-header"><h3>${t('install_script')}</h3><button class="btn-icon" id="scriptCloseBtn">&times;</button></div>
       <div class="modal-body">
         <p style="margin-bottom:12px;color:var(--text-dim);font-size:13px">${t('install_cmd_hint')}</p>
         <div class="copy-wrap" style="margin-bottom:16px">
-          <input class="form-control" readonly value="curl -sL ${location.origin}/static/agent/install.sh | bash -s install ${location.origin} <COMM_KEY>" id="installCmd" style="font-family:monospace;font-size:12px">
-          <button class="btn btn-primary copy-btn" onclick="copyText('installCmd')">${t('copy')}</button>
+          <input class="form-control" readonly id="installCmd" style="font-family:monospace;font-size:12px">
+          <button class="btn btn-primary copy-btn" id="copyInstallBtn">${t('copy')}</button>
         </div>
         <p style="margin-bottom:8px;color:var(--text-dim);font-size:13px">${t('uninstall_cmd_hint')}</p>
         <div class="copy-wrap">
-          <input class="form-control" readonly value="curl -sL ${location.origin}/static/agent/install.sh | bash -s uninstall" id="uninstallCmd" style="font-family:monospace;font-size:12px">
-          <button class="btn btn-primary copy-btn" onclick="copyText('uninstallCmd')">${t('copy')}</button>
+          <input class="form-control" readonly id="uninstallCmd" style="font-family:monospace;font-size:12px">
+          <button class="btn btn-primary copy-btn" id="copyUninstallBtn">${t('copy')}</button>
         </div>
       </div>
-      <div class="modal-footer"><button class="btn btn-outline" onclick="closeModal()">${t('close')}</button></div>
+      <div class="modal-footer"><button class="btn btn-outline" id="scriptCloseBtn2">${t('close')}</button></div>
     </div></div>`;
     document.body.insertAdjacentHTML('beforeend', mhtml);
+    document.getElementById('installCmd').value = installCmd;
+    document.getElementById('uninstallCmd').value = uninstallCmd;
+    document.getElementById('copyInstallBtn').onclick = () => doCopy('installCmd');
+    document.getElementById('copyUninstallBtn').onclick = () => doCopy('uninstallCmd');
+    document.getElementById('scriptCloseBtn').onclick = closeModal;
+    document.getElementById('scriptCloseBtn2').onclick = closeModal;
   };
 }
-window.editAgent = async (id) => { const agents = await api('GET', '/api/agents'); const a = agents.find(x => x.id === id); if (a) showAgentModal(a); };
 window.deleteAgent = async (id) => { if (!confirm(t('confirm_delete_agent'))) return; await api('DELETE', '/api/agents/' + id); toast(t('agent_deleted'), 'success'); loadPage('agents'); };
-
-function showAgentModal(agent) {
-  const isEdit = !!agent;
-  let html = `<div class="modal-overlay" id="modalOverlay"><div class="modal">
-    <div class="modal-header"><h3>${isEdit?t('edit_agent'):t('add_agent')}</h3><button class="btn-icon" onclick="closeModal()">&times;</button></div>
-    <div class="modal-body">
-      <div class="form-group"><label>${t('name')}</label><input class="form-control" id="aName" value="${isEdit?escHtml(agent.name):''}" required></div>
-      <div class="form-row">
-        <div class="form-group"><label>${t('host')}</label><input class="form-control" id="aHost" value="${isEdit?escHtml(agent.host):''}" required></div>
-        <div class="form-group"><label>${t('port')}</label><input class="form-control" id="aPort" type="number" value="${isEdit?agent.port:9527}"></div>
-      </div>
-    </div>
-    <div class="modal-footer"><button class="btn btn-outline" onclick="closeModal()">${t('cancel')}</button><button class="btn btn-primary" id="saveAgentBtn">${t('save')}</button></div>
-  </div></div>`;
-  document.body.insertAdjacentHTML('beforeend', html);
-  document.getElementById('saveAgentBtn').onclick = async () => {
-    const data = { name: document.getElementById('aName').value.trim(), host: document.getElementById('aHost').value.trim(), port: parseInt(document.getElementById('aPort').value) };
-    try {
-      if (isEdit) await api('PUT', '/api/agents/' + agent.id, data); else await api('POST', '/api/agents', data);
-      toast(isEdit?t('agent_updated'):t('agent_created'), 'success'); closeModal(); loadPage('agents');
-    } catch(e) { toast(e.message, 'error'); }
-  };
-}
 
 // ── Templates ──
 async function renderTemplates(el) {
@@ -799,10 +788,26 @@ window.logNav = (p) => { logPage = p; loadPage('logs'); };
 
 // ── Helpers ──
 window.closeModal = () => { const m = document.getElementById('modalOverlay'); if (m) m.remove(); };
-window.copyText = (id) => {
+function doCopy(id) {
   const el = document.getElementById(id); if (!el) return;
-  navigator.clipboard.writeText(el.value).then(() => toast(t('copied'), 'success')).catch(() => { el.select(); document.execCommand('copy'); toast(t('copied'), 'success'); });
-};
+  const text = el.value || el.textContent || '';
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).then(() => toast(t('copied'), 'success')).catch(() => fallbackCopy(el));
+  } else {
+    fallbackCopy(el);
+  }
+}
+function fallbackCopy(el) {
+  const ta = document.createElement('textarea');
+  ta.value = el.value || el.textContent || '';
+  ta.style.cssText = 'position:fixed;left:-9999px';
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); toast(t('copied'), 'success'); } catch(e) { toast('Copy failed', 'error'); }
+  document.body.removeChild(ta);
+}
+window.copyText = doCopy;
+window.doCopy = doCopy;
 
 // ── Init ──
 checkNeedCaptcha().then(() => render());
