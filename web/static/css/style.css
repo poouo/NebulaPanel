@@ -173,12 +173,62 @@ textarea.form-control { min-height:100px; resize:vertical; font-family:'JetBrain
 .copy-wrap input { flex:1; }
 .copy-btn { white-space:nowrap; }
 
-/* Responsive */
-@media (max-width:768px) {
-  .sidebar { display:none; }
-  .main { margin-left:0; }
-  .form-row { grid-template-columns:1fr; }
-  .stats-grid { grid-template-columns:1fr 1fr; }
+/* ──────────────────────────────────────────
+   Mobile hamburger + sidebar backdrop
+   Hidden on desktop, shown on <=960px viewports
+   ────────────────────────────────────────── */
+.mobile-menu-btn {
+  display:none;
+  position:fixed; top:10px; left:10px; z-index:110;
+  width:40px; height:40px; border-radius:8px;
+  background:var(--bg-card); border:1px solid var(--border);
+  color:var(--text); cursor:pointer;
+  align-items:center; justify-content:center;
+  box-shadow:var(--shadow);
+}
+.sidebar-backdrop {
+  display:none; position:fixed; inset:0;
+  background:rgba(0,0,0,.45); z-index:99;
+}
+.sidebar-backdrop.show { display:block; }
+
+/* ── Tablet (<=960px): sidebar becomes a slide-in drawer ── */
+@media (max-width: 960px) {
+  .mobile-menu-btn { display:inline-flex; }
+  .sidebar {
+    transform: translateX(-100%);
+    transition: transform .25s ease;
+    width: 260px;
+  }
+  .sidebar.open { transform: translateX(0); }
+  .main { margin-left: 0; padding: 64px 16px 24px; }
+  .topbar { flex-wrap: wrap; gap: 8px; }
+  .topbar h2 { font-size: 18px; }
+  .form-row { grid-template-columns: 1fr; }
+  .stats-grid { grid-template-columns: 1fr 1fr; gap: 12px; }
+  .card { padding: 16px; }
+  .modal { width: 95vw; max-width: 95vw; }
+  .modal-body { padding: 16px; }
+}
+
+/* ── Phone (<=560px): stack & enlarge for touch ── */
+@media (max-width: 560px) {
+  .topbar { align-items: flex-start; flex-direction: column; }
+  .topbar-actions { flex-wrap: wrap; }
+  .stats-grid { grid-template-columns: 1fr; }
+  .btn { padding: 10px 14px; font-size: 14px; }
+  .btn-sm { padding: 6px 10px; font-size: 12px; }
+  .btn-group { flex-wrap: wrap; }
+  .btn-group .btn { flex: 1 1 auto; justify-content: center; }
+  .table th, .table td { white-space: nowrap; padding: 10px 12px; }
+  .table-wrap { margin: 0 -16px; padding: 0 16px; }
+  .login-box { padding: 24px 20px; width: 100%; max-width: 100%; border-radius: 12px; }
+  .chart-toolbar { flex-wrap: wrap; }
+  .chart-container { height: 240px; }
+  .copy-wrap { flex-direction: column; align-items: stretch; }
+  .copy-wrap .copy-btn { margin-top: 8px; }
+  .toast-container { top: 10px; right: 10px; left: 10px; }
+  .toast { min-width: 0; width: 100%; }
 }
 
 /* Scrollbar */

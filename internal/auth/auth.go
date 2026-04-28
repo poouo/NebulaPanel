@@ -46,7 +46,7 @@ func GenerateToken(userID int, username, role string) (string, error) {
 		Username: username,
 		Role:     role,
 		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(10 * 24 * time.Hour)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 		},
 	}
@@ -72,10 +72,12 @@ func ExtractToken(r *http.Request) string {
 	if strings.HasPrefix(auth, "Bearer ") {
 		return strings.TrimPrefix(auth, "Bearer ")
 	}
-	// Also check cookie
-	cookie, err := r.Cookie("token")
-	if err == nil {
-		return cookie.Value
+	// Also check cookie (support both legacy "token" and new "np_token").
+	if c, err := r.Cookie("np_token"); err == nil && c.Value != "" {
+		return c.Value
+	}
+	if c, err := r.Cookie("token"); err == nil {
+		return c.Value
 	}
 	return ""
 }

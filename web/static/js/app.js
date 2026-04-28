@@ -225,21 +225,110 @@ function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-// ── Web Crypto helpers (used to never send plaintext password) ──
+// ── Crypto helpers (used so the plaintext password never touches the wire).
+// window.crypto.subtle is only exposed in secure contexts (HTTPS or localhost),
+// so we ship a small pure-JS SHA-256 / HMAC-SHA256 fallback for plain HTTP.
+const _subtleOk = (typeof window !== 'undefined') && window.crypto && window.crypto.subtle
+  && typeof window.crypto.subtle.digest === 'function';
+
+// ---- pure JS SHA-256 (works anywhere, no crypto.subtle needed) ----
+function _sha256Bytes(bytes){
+  // Based on FIPS 180-4. Operates on Uint8Array, returns Uint8Array(32).
+  const K = new Uint32Array([
+    0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2]);
+  const H = new Uint32Array([
+    0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19]);
+  const l = bytes.length;
+  const withPad = new Uint8Array((((l + 9) >> 6) + 1) << 6);
+  withPad.set(bytes);
+  withPad[l] = 0x80;
+  const bitLen = l * 8;
+  // 64-bit big-endian length; we only need low 32 bits for our sizes
+  withPad[withPad.length-4] = (bitLen >>> 24) & 0xff;
+  withPad[withPad.length-3] = (bitLen >>> 16) & 0xff;
+  withPad[withPad.length-2] = (bitLen >>> 8) & 0xff;
+  withPad[withPad.length-1] =  bitLen        & 0xff;
+  const W = new Uint32Array(64);
+  for (let i=0; i<withPad.length; i+=64){
+    for (let j=0;j<16;j++){
+      const k=i+j*4;
+      W[j] = (withPad[k]<<24)|(withPad[k+1]<<16)|(withPad[k+2]<<8)|withPad[k+3];
+    }
+    for (let j=16;j<64;j++){
+      const s0 = ( (W[j-15]>>>7)|(W[j-15]<<25) ) ^ ( (W[j-15]>>>18)|(W[j-15]<<14) ) ^ (W[j-15]>>>3);
+      const s1 = ( (W[j-2]>>>17)|(W[j-2]<<15) ) ^ ( (W[j-2]>>>19)|(W[j-2]<<13) ) ^ (W[j-2]>>>10);
+      W[j] = (W[j-16] + s0 + W[j-7] + s1) >>> 0;
+    }
+    let [a,b,c,d,e,f,g,h] = H;
+    for (let j=0;j<64;j++){
+      const S1 = ((e>>>6)|(e<<26)) ^ ((e>>>11)|(e<<21)) ^ ((e>>>25)|(e<<7));
+      const ch = (e & f) ^ (~e & g);
+      const t1 = (h + S1 + ch + K[j] + W[j]) >>> 0;
+      const S0 = ((a>>>2)|(a<<30)) ^ ((a>>>13)|(a<<19)) ^ ((a>>>22)|(a<<10));
+      const mj = (a & b) ^ (a & c) ^ (b & c);
+      const t2 = (S0 + mj) >>> 0;
+      h=g; g=f; f=e; e=(d+t1)>>>0; d=c; c=b; b=a; a=(t1+t2)>>>0;
+    }
+    H[0]=(H[0]+a)>>>0; H[1]=(H[1]+b)>>>0; H[2]=(H[2]+c)>>>0; H[3]=(H[3]+d)>>>0;
+    H[4]=(H[4]+e)>>>0; H[5]=(H[5]+f)>>>0; H[6]=(H[6]+g)>>>0; H[7]=(H[7]+h)>>>0;
+  }
+  const out = new Uint8Array(32);
+  for (let i=0;i<8;i++){
+    out[i*4]   = (H[i]>>>24)&0xff;
+    out[i*4+1] = (H[i]>>>16)&0xff;
+    out[i*4+2] = (H[i]>>> 8)&0xff;
+    out[i*4+3] =  H[i]      &0xff;
+  }
+  return out;
+}
+function _bytesToHex(bytes){
+  let s=''; for (let i=0;i<bytes.length;i++) s += bytes[i].toString(16).padStart(2,'0');
+  return s;
+}
+function _hmacSha256(keyBytes, msgBytes){
+  const blockSize = 64;
+  if (keyBytes.length > blockSize) keyBytes = _sha256Bytes(keyBytes);
+  const kpad = new Uint8Array(blockSize); kpad.set(keyBytes);
+  const okey = new Uint8Array(blockSize), ikey = new Uint8Array(blockSize);
+  for (let i=0;i<blockSize;i++){ okey[i]=kpad[i]^0x5c; ikey[i]=kpad[i]^0x36; }
+  const inner = new Uint8Array(ikey.length + msgBytes.length);
+  inner.set(ikey); inner.set(msgBytes, ikey.length);
+  const innerHash = _sha256Bytes(inner);
+  const outer = new Uint8Array(okey.length + innerHash.length);
+  outer.set(okey); outer.set(innerHash, okey.length);
+  return _sha256Bytes(outer);
+}
+
 async function sha256Hex(text){
   const data = new TextEncoder().encode(text);
-  const buf  = await crypto.subtle.digest('SHA-256', data);
-  return [...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,'0')).join('');
+  if (_subtleOk) {
+    try {
+      const buf = await window.crypto.subtle.digest('SHA-256', data);
+      return [...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,'0')).join('');
+    } catch(_){ /* fall through to pure JS */ }
+  }
+  return _bytesToHex(_sha256Bytes(data));
 }
 async function hmacSha256Hex(keyHex, msg){
-  // keyHex is hex of sha256(password); use raw bytes of that hex string as HMAC key
-  // (interop with server which derives expected response from stored client_hash hex)
   const enc = new TextEncoder();
   const keyBytes = enc.encode(keyHex);
-  const key = await crypto.subtle.importKey('raw', keyBytes,
-    { name:'HMAC', hash:'SHA-256' }, false, ['sign']);
-  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(msg));
-  return [...new Uint8Array(sig)].map(b=>b.toString(16).padStart(2,'0')).join('');
+  const msgBytes = enc.encode(msg);
+  if (_subtleOk) {
+    try {
+      const key = await window.crypto.subtle.importKey('raw', keyBytes,
+        { name:'HMAC', hash:'SHA-256' }, false, ['sign']);
+      const sig = await window.crypto.subtle.sign('HMAC', key, msgBytes);
+      return [...new Uint8Array(sig)].map(b=>b.toString(16).padStart(2,'0')).join('');
+    } catch(_){ /* fall through */ }
+  }
+  return _bytesToHex(_hmacSha256(keyBytes, msgBytes));
 }
 
 // ── Icons ──
@@ -258,15 +347,43 @@ const icons = {
 };
 
 // ── Auth ──
+const AUTH_COOKIE_DAYS = 10;
+function _setCookie(name, value, days){
+  const d = new Date(); d.setTime(d.getTime() + days*24*60*60*1000);
+  const secure = (location.protocol === 'https:') ? '; Secure' : '';
+  document.cookie = name + '=' + encodeURIComponent(value)
+    + '; expires=' + d.toUTCString()
+    + '; path=/; SameSite=Lax' + secure;
+}
+function _delCookie(name){
+  document.cookie = name + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/';
+}
+function _getCookie(name){
+  const m = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'));
+  return m ? decodeURIComponent(m[1]) : '';
+}
+// On first load, rehydrate from cookie if localStorage was cleared (10-day rule).
+if (!state.token) {
+  const ck = _getCookie('np_token');
+  if (ck) {
+    state.token = ck;
+    state.role  = _getCookie('np_role')     || '';
+    state.username = _getCookie('np_user')  || '';
+  }
+}
 function setAuth(tk, role, uname) {
   state.token = tk; state.role = role; state.username = uname;
   localStorage.setItem('token', tk);
   localStorage.setItem('role', role);
   localStorage.setItem('username', uname);
+  _setCookie('np_token', tk, AUTH_COOKIE_DAYS);
+  _setCookie('np_role',  role,  AUTH_COOKIE_DAYS);
+  _setCookie('np_user',  uname, AUTH_COOKIE_DAYS);
 }
 function logout() {
   state.token = ''; state.role = ''; state.username = '';
   localStorage.removeItem('token'); localStorage.removeItem('role'); localStorage.removeItem('username');
+  _delCookie('np_token'); _delCookie('np_role'); _delCookie('np_user');
   render();
 }
 function navigate(page) { state.page = page; render(); }
@@ -297,7 +414,17 @@ function renderLogin(app) {
     <p class="subtitle">${isReg ? t('sign_up') : t('sign_in')}</p>
     <form id="authForm">
       <div class="form-group"><label>${t('username')}</label><input class="form-control" id="authUser" placeholder="${t('username')}" required minlength="3"></div>
-      <div class="form-group"><label>${t('password')}</label><input class="form-control" id="authPass" type="password" placeholder="${t('password')}" required minlength="6"></div>
+      <div class="form-group"><label>${t('password')}</label>
+        <div style="position:relative">
+          <input class="form-control" id="authPass" type="password" placeholder="${t('password')}" required minlength="6" style="padding-right:42px">
+          <button type="button" id="togglePass" aria-label="show/hide" title="show/hide"
+            style="position:absolute;top:50%;right:8px;transform:translateY(-50%);background:transparent;border:0;padding:4px;cursor:pointer;color:var(--text-secondary,#888)">
+            <svg id="togglePassIcon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8S1 12 1 12z"/><circle cx="12" cy="12" r="3"/>
+            </svg>
+          </button>
+        </div>
+      </div>
       <div id="captchaArea" style="display:${isReg || needCaptcha ? 'block' : 'none'}">
         <div class="captcha-row">
           <div class="form-group"><label>${t('captcha')}</label><input class="form-control" id="authCaptcha" placeholder="${t('captcha')}"></div>
@@ -322,6 +449,18 @@ function renderLogin(app) {
   };
   document.getElementById('loginThemeBtn').onclick = toggleTheme;
   document.getElementById('loginLangBtn').onclick = toggleLang;
+  const _tp = document.getElementById('togglePass');
+  if (_tp) _tp.onclick = () => {
+    const inp = document.getElementById('authPass');
+    const icon = document.getElementById('togglePassIcon');
+    if (inp.type === 'password') {
+      inp.type = 'text';
+      icon.innerHTML = '<path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-11-8-11-8a21.77 21.77 0 0 1 5.06-6.06"/><path d="M9.9 4.24A10.94 10.94 0 0 1 12 4c7 0 11 8 11 8a21.83 21.83 0 0 1-3.17 4.19"/><line x1="1" y1="1" x2="23" y2="23"/>';
+    } else {
+      inp.type = 'password';
+      icon.innerHTML = '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8S1 12 1 12z"/><circle cx="12" cy="12" r="3"/>';
+    }
+  };
 
   document.getElementById('authForm').onsubmit = async (e) => {
     e.preventDefault();
@@ -383,7 +522,11 @@ function renderApp(app) {
     );
   }
   app.innerHTML = `<div class="app">
-    <aside class="sidebar">
+    <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="menu">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+    </button>
+    <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
+    <aside class="sidebar" id="sidebar">
       <div class="sidebar-brand"><h1>NebulaPanel</h1><small>Proxy Management</small></div>
       <nav class="sidebar-nav">${navItems.map(n =>
         `<a href="#" data-page="${n.id}" class="${state.page===n.id?'active':''}">${n.icon}<span>${n.label}</span></a>`
@@ -401,8 +544,16 @@ function renderApp(app) {
     <main class="main" id="mainContent"><div class="loading"><div class="spinner"></div></div></main>
   </div>`;
 
+  // ── Mobile sidebar toggle ──
+  const _sidebar   = document.getElementById('sidebar');
+  const _backdrop  = document.getElementById('sidebarBackdrop');
+  const _closeSide = () => { _sidebar.classList.remove('open'); _backdrop.classList.remove('show'); };
+  const _openSide  = () => { _sidebar.classList.add('open');    _backdrop.classList.add('show');    };
+  document.getElementById('mobileMenuBtn').onclick = () =>
+    _sidebar.classList.contains('open') ? _closeSide() : _openSide();
+  _backdrop.onclick = _closeSide;
   document.querySelectorAll('.sidebar-nav a').forEach(a => {
-    a.onclick = (e) => { e.preventDefault(); navigate(a.dataset.page); };
+    a.onclick = (e) => { e.preventDefault(); _closeSide(); navigate(a.dataset.page); };
   });
   document.getElementById('logoutBtn').onclick = (e) => { e.preventDefault(); logout(); };
   document.getElementById('themeBtn').onclick = toggleTheme;
