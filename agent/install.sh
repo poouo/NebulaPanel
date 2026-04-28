@@ -41,6 +41,8 @@ check_deps() {
             apt-get update -qq && apt-get install -y -qq curl openssl xxd coreutils
         elif command -v yum &>/dev/null; then
             yum install -y curl openssl vim-common coreutils
+        elif command -v apk &>/dev/null; then
+            apk add --no-cache curl openssl coreutils
         else
             log_error "Cannot install dependencies automatically. Please install:$missing"
             exit 1
@@ -79,16 +81,16 @@ install_agent() {
     # Create directory
     mkdir -p "$INSTALL_DIR"
 
-    # Download agent script - try GitHub first, fallback to panel
-    log_info "Downloading agent script..."
-    if curl -sL --connect-timeout 10 "$REPO_URL" -o "$INSTALL_DIR/nebula-agent.sh" 2>/dev/null; then
-        log_info "Downloaded from GitHub"
+    # Download agent script - try GitHub first (15s timeout), fallback to panel
+    log_info "Downloading agent script from GitHub..."
+    if curl -sL --connect-timeout 15 --max-time 30 "$REPO_URL" -o "$INSTALL_DIR/nebula-agent.sh" 2>/dev/null && [ -s "$INSTALL_DIR/nebula-agent.sh" ]; then
+        log_info "Downloaded from GitHub successfully"
     else
-        log_warn "GitHub timeout, downloading from panel..."
-        if curl -sL --connect-timeout 15 "${panel_url}/static/agent/nebula-agent.sh" -o "$INSTALL_DIR/nebula-agent.sh" 2>/dev/null; then
-            log_info "Downloaded from panel"
+        log_warn "GitHub unreachable (15s timeout), downloading from panel server..."
+        if curl -sL --connect-timeout 15 --max-time 30 "${panel_url}/static/agent/nebula-agent.sh" -o "$INSTALL_DIR/nebula-agent.sh" 2>/dev/null && [ -s "$INSTALL_DIR/nebula-agent.sh" ]; then
+            log_info "Downloaded from panel server successfully"
         else
-            log_error "Failed to download agent script"
+            log_error "Failed to download agent script from both GitHub and panel"
             exit 1
         fi
     fi
