@@ -1,0 +1,9 @@
+.git
+*.db
+*.db-wal
+*.db-shm
+nebula-panel
+/data
+README.md
+LICENSE
+.gitignore

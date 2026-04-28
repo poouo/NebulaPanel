@@ -1,0 +1,11 @@
+nebula-panel
+*.db
+*.db-wal
+*.db-shm
+/data/
+*.exe
+*.dll
+*.so
+*.dylib
+.env
+.DS_Store
