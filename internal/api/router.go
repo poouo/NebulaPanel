@@ -20,6 +20,7 @@ func NewRouter() http.Handler {
 	mux.HandleFunc("GET /api/settings/public", handleGetPublicSettings)
 
 	// ── Agent 加密通信接口 ──
+	mux.HandleFunc("POST /api/agent/bootstrap", handleAgentBootstrap)
 	mux.HandleFunc("POST /api/agent/heartbeat", handleAgentHeartbeat)
 	mux.HandleFunc("POST /api/agent/traffic", handleAgentTraffic)
 
@@ -43,8 +44,14 @@ func NewRouter() http.Handler {
 
 	// Agent 管理 (admin)
 	mux.HandleFunc("GET /api/agents", adminWrap(handleListAgents))
+	mux.HandleFunc("POST /api/agents", adminWrap(handleCreateAgent))
 	mux.HandleFunc("PUT /api/agents/{id}", adminWrap(handleUpdateAgentMeta))
 	mux.HandleFunc("DELETE /api/agents/{id}", adminWrap(handleDeleteAgent))
+	mux.HandleFunc("POST /api/agents/{id}/restart", adminWrap(handleRestartAgent))
+	mux.HandleFunc("POST /api/agents/{id}/rotate-token", adminWrap(handleRotateAgentToken))
+	mux.HandleFunc("POST /api/agents/fast-mode", adminWrap(handleAgentFastMode))
+	mux.HandleFunc("GET /api/agents/install-script", adminWrap(handleGetInstallScript))
+	mux.HandleFunc("GET /api/agents/{id}/install-script", adminWrap(handleGetAgentInstallScript))
 
 	// 审计规则 (admin)
 	mux.HandleFunc("GET /api/audit/rules", adminWrap(handleListAuditRules))

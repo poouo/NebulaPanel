@@ -249,3 +249,51 @@ textarea.form-control { min-height:100px; resize:vertical; font-family:'JetBrain
 /* Theme/Lang toggle buttons in sidebar */
 .theme-toggle-btn, .lang-toggle-btn { background:var(--bg-input); border:1px solid var(--border); border-radius:6px; padding:4px 10px; font-size:12px; color:var(--text-dim); cursor:pointer; transition:all .2s; display:inline-flex; align-items:center; gap:4px; }
 .theme-toggle-btn:hover, .lang-toggle-btn:hover { border-color:var(--primary); color:var(--primary); }
+
+
+/* ── Sidebar footer icons (fix oversized logout SVG) ── */
+.sidebar-footer a,
+.sidebar-footer button { display:inline-flex; align-items:center; gap:6px; }
+.sidebar-footer svg,
+.sidebar-footer a svg,
+.sidebar-footer button svg { width:16px; height:16px; flex-shrink:0; }
+.sidebar-footer .logout-link { color:var(--text-dim); cursor:pointer; font-size:12px; }
+.sidebar-footer .logout-link:hover { color:var(--danger); }
+
+/* ── Agents page: view toggle + card grid ── */
+.agents-toolbar { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:12px; }
+.agents-toolbar .view-toggle { display:inline-flex; border:1px solid var(--border); border-radius:8px; overflow:hidden; }
+.agents-toolbar .view-toggle button { background:transparent; border:none; color:var(--text-dim); padding:6px 12px; font-size:12px; cursor:pointer; display:inline-flex; align-items:center; gap:6px; }
+.agents-toolbar .view-toggle button.active { background:var(--primary-bg); color:var(--primary); }
+.agents-toolbar .refresh-hint { font-size:11px; color:var(--text-dim); }
+.agents-toolbar .refresh-hint .dot { display:inline-block; width:6px; height:6px; border-radius:50%; background:var(--success); margin-right:6px; box-shadow:0 0 6px var(--success); animation:pulse 1.8s ease-in-out infinite; }
+@keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.35; } }
+
+.agents-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:14px; }
+.agent-card { background:var(--bg-card); border:1px solid var(--border); border-radius:14px; padding:16px 18px; box-shadow:var(--shadow); position:relative; transition:border-color .2s,transform .15s; }
+.agent-card:hover { border-color:var(--primary); transform:translateY(-1px); }
+.agent-card .ac-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:10px; }
+.agent-card .ac-name { font-weight:600; font-size:15px; letter-spacing:.2px; }
+.agent-card .ac-meta { font-size:11px; color:var(--text-dim); margin-top:2px; }
+.agent-card .ac-chips { display:flex; gap:6px; margin-top:10px; flex-wrap:wrap; }
+.agent-card .chip { background:var(--bg-input); color:var(--text-dim); padding:2px 8px; border-radius:999px; font-size:11px; letter-spacing:.2px; }
+.agent-card .ac-row { display:flex; align-items:center; gap:8px; margin-top:8px; font-size:12px; color:var(--text-dim); }
+.agent-card .ac-row .label { width:56px; flex-shrink:0; color:var(--text-dim); }
+.agent-card .bar { flex:1; height:6px; background:var(--bg-input); border-radius:99px; overflow:hidden; }
+.agent-card .bar > span { display:block; height:100%; background:linear-gradient(90deg,var(--primary),var(--primary-hover)); border-radius:inherit; transition:width .4s; }
+.agent-card .bar.warn > span { background:linear-gradient(90deg,#f59e0b,#f97316); }
+.agent-card .bar.danger > span { background:linear-gradient(90deg,#ef4444,#b91c1c); }
+.agent-card .ac-pct { font-variant-numeric:tabular-nums; min-width:42px; text-align:right; color:var(--text); }
+.agent-card .ac-foot { display:flex; gap:6px; margin-top:14px; flex-wrap:wrap; }
+.agent-card .ac-foot .btn-sm { flex:0 0 auto; }
+.agent-card .status-dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--text-dim); }
+.agent-card .status-dot.online { background:var(--success); box-shadow:0 0 6px var(--success); }
+.agent-card .status-dot.offline { background:var(--danger); }
+
+/* Detail popover in list view */
+.agent-details { background:var(--bg-input); padding:10px 14px; border-radius:10px; font-size:12px; color:var(--text-dim); display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:6px 18px; }
+.agent-details .k { color:var(--text-dim); margin-right:6px; }
+.agent-details .v { color:var(--text); font-variant-numeric:tabular-nums; }
+
+/* Install-script modal convenience */
+.script-block { background:var(--bg-input); border:1px solid var(--border); border-radius:8px; padding:12px; font-family:'JetBrains Mono',monospace; font-size:12.5px; color:var(--text); white-space:pre-wrap; word-break:break-all; }

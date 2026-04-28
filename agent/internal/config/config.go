@@ -12,6 +12,7 @@ import (
 type Config struct {
 	PanelURL          string
 	CommKey           string
+	AgentToken        string
 	HeartbeatInterval int
 	TrafficInterval   int
 	LogDir            string
@@ -52,6 +53,8 @@ func LoadFile(path string) (*Config, error) {
 			c.PanelURL = v
 		case "COMM_KEY":
 			c.CommKey = v
+		case "AGENT_TOKEN", "TOKEN":
+			c.AgentToken = v
 		case "HEARTBEAT_INTERVAL":
 			if n, err := strconv.Atoi(v); err == nil && n > 0 {
 				c.HeartbeatInterval = n
@@ -73,8 +76,11 @@ func LoadFile(path string) (*Config, error) {
 	if err := sc.Err(); err != nil {
 		return nil, err
 	}
-	if c.PanelURL == "" || c.CommKey == "" {
-		return nil, fmt.Errorf("PANEL_URL and COMM_KEY are required in %s", path)
+	if c.PanelURL == "" {
+		return nil, fmt.Errorf("PANEL_URL is required in %s", path)
+	}
+	if c.CommKey == "" && c.AgentToken == "" {
+		return nil, fmt.Errorf("either COMM_KEY or AGENT_TOKEN is required in %s", path)
 	}
 	return c, nil
 }

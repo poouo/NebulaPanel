@@ -683,8 +683,13 @@ func handleToggleNode(w http.ResponseWriter, r *http.Request) {
 
 func handleListAgents(w http.ResponseWriter, r *http.Request) {
 	rows, err := db.DB.Query(
-		`SELECT id, name, host, port, status, COALESCE(version,''),
-				cpu_usage, mem_usage, net_in, net_out, uptime,
+		`SELECT id, name, host, port, status, COALESCE(token,''),
+				COALESCE(version,''), COALESCE(xray_version,''),
+				cpu_usage, cpu_cores, COALESCE(cpu_model,''),
+				mem_usage, mem_total,
+				disk_total, disk_used, disk_usage,
+				net_in, net_out, net_in_speed, net_out_speed,
+				uptime, COALESCE(os_info,''), COALESCE(kernel,''), COALESCE(arch,''), COALESCE(load_avg,''),
 				COALESCE(remark,''), COALESCE(entry_ip,''),
 				last_heartbeat, created_at
 		 FROM agents ORDER BY id ASC`)
@@ -693,27 +698,47 @@ func handleListAgents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rows.Close()
-
 	var agents []map[string]interface{}
+	now := time.Now()
 	for rows.Next() {
-		var id, port int
-		var netIn, netOut int64
-		var uptime int
-		var cpuUsage, memUsage float64
-		var name, host, status, version, remark, entryIP string
+		var id, port, cpuCores, uptime int
+		var netIn, netOut, netInSpeed, netOutSpeed, memTotal, diskTotal, diskUsed int64
+		var cpuUsage, memUsage, diskUsage float64
+		var name, host, status, token, version, xrayVersion, cpuModel, osInfo, kernel, arch, loadAvg, remark, entryIP string
 		var lastHB, createdAt *string
-		rows.Scan(&id, &name, &host, &port, &status, &version,
-			&cpuUsage, &memUsage, &netIn, &netOut, &uptime,
+		rows.Scan(&id, &name, &host, &port, &status, &token,
+			&version, &xrayVersion,
+			&cpuUsage, &cpuCores, &cpuModel,
+			&memUsage, &memTotal,
+			&diskTotal, &diskUsed, &diskUsage,
+			&netIn, &netOut, &netInSpeed, &netOutSpeed,
+			&uptime, &osInfo, &kernel, &arch, &loadAvg,
 			&remark, &entryIP, &lastHB, &createdAt)
 		displayIP := entryIP
 		if displayIP == "" {
 			displayIP = host
 		}
+		// Compute derived "online" status: if last heartbeat is missing or
+		// older than 3 minutes the agent is considered offline regardless of
+		// the stored column (which is updated by a background job).
+		if lastHB != nil && *lastHB != "" {
+			if t, err := time.Parse("2006-01-02 15:04:05", *lastHB); err == nil {
+				if now.UTC().Sub(t) > 3*time.Minute {
+					status = "offline"
+				}
+			}
+		}
 		agents = append(agents, map[string]interface{}{
 			"id": id, "name": name, "host": host, "port": port,
-			"status": status, "version": version,
-			"cpu_usage": cpuUsage, "mem_usage": memUsage,
-			"net_in": netIn, "net_out": netOut, "uptime": uptime,
+			"status": status, "token": token,
+			"version": version, "xray_version": xrayVersion,
+			"cpu_usage": cpuUsage, "cpu_cores": cpuCores, "cpu_model": cpuModel,
+			"mem_usage": memUsage, "mem_total": memTotal,
+			"disk_total": diskTotal, "disk_used": diskUsed, "disk_usage": diskUsage,
+			"net_in": netIn, "net_out": netOut,
+			"net_in_speed": netInSpeed, "net_out_speed": netOutSpeed,
+			"uptime": uptime,
+			"os": osInfo, "kernel": kernel, "arch": arch, "load_avg": loadAvg,
 			"remark": remark, "entry_ip": entryIP, "display_ip": displayIP,
 			"last_heartbeat": lastHB, "created_at": createdAt,
 		})
@@ -726,26 +751,44 @@ func handleListAgents(w http.ResponseWriter, r *http.Request) {
 
 func handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name string `json:"name"`
-		Host string `json:"host"`
-		Port int    `json:"port"`
+		Name   string `json:"name"`
+		Host   string `json:"host"`
+		Port   int    `json:"port"`
+		Remark string `json:"remark"`
 	}
 	if err := parseJSON(r, &req); err != nil {
 		jsonError(w, "invalid request", http.StatusBadRequest)
 		return
 	}
+	if strings.TrimSpace(req.Name) == "" {
+		jsonError(w, "name required", http.StatusBadRequest)
+		return
+	}
 	if req.Port == 0 {
 		req.Port = 9527
 	}
-	result, err := db.DB.Exec("INSERT INTO agents (name, host, port) VALUES (?, ?, ?)",
-		req.Name, req.Host, req.Port)
+	if req.Host == "" {
+		req.Host = "pending"
+	}
+	token := generateAgentToken()
+	result, err := db.DB.Exec(
+		"INSERT INTO agents (name, host, port, token, remark, status) VALUES (?,?,?,?,?,'offline')",
+		req.Name, req.Host, req.Port, token, req.Remark)
 	if err != nil {
 		jsonError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	id, _ := result.LastInsertId()
-	logger.Infof("Admin", "Created agent: %s (id=%d)", req.Name, id)
-	jsonOK(w, map[string]interface{}{"id": id})
+	panelURL := strings.TrimRight(getPanelURL(r), "/")
+	installCmd := fmt.Sprintf("bash <(curl -fsSL %s/static/agent/install.sh) install %s %s", panelURL, panelURL, token)
+	logger.Infof("Admin", "Created agent: %s (id=%d, token=%s...)", req.Name, id, token[:8])
+	jsonOK(w, map[string]interface{}{
+		"id":          id,
+		"name":        req.Name,
+		"token":       token,
+		"panel_url":   panelURL,
+		"install_cmd": installCmd,
+	})
 }
 
 func handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
@@ -791,7 +834,26 @@ func handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, "deleted")
 }
 
+// handleGetInstallScript returns a generic (token-less) install hint.
+// For per-agent token-based installation use handleGetAgentInstallScript
+// which embeds the agent token directly in the one-liner.
 func handleGetInstallScript(w http.ResponseWriter, r *http.Request) {
+	panelURL := strings.TrimRight(getPanelURL(r), "/")
+	commKey := getCommKey()
+	installCmd := fmt.Sprintf("bash <(curl -fsSL %s/static/agent/install.sh) install %s <TOKEN>", panelURL, panelURL)
+	uninstall := fmt.Sprintf("bash <(curl -fsSL %s/static/agent/install.sh) uninstall", panelURL)
+	jsonOK(w, map[string]string{
+		"panel_url":     panelURL,
+		"comm_key":      commKey,
+		"install_cmd":   installCmd,
+		"uninstall_cmd": uninstall,
+	})
+}
+
+// handleGetInstallScriptLegacy is the previous inline script (kept for
+// reference; no longer routed). The new flow ships a maintained static
+// script at web/static/agent/install.sh.
+func handleGetInstallScriptLegacy(w http.ResponseWriter, r *http.Request) {
 	panelHost := getSetting("panel_host", r.Host)
 	commKey := getCommKey()
 	script := fmt.Sprintf(`#!/bin/bash
@@ -894,55 +956,103 @@ func handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var hb struct {
-		Hostname string  `json:"hostname"`
-		Host     string  `json:"host"`
-		CPU      float64 `json:"cpu"`
-		Mem      float64 `json:"mem"`
-		MemTotal int64   `json:"mem_total"`
-		NetIn    int64   `json:"net_in"`
-		NetOut   int64   `json:"net_out"`
-		Uptime   int     `json:"uptime"`
-		Version  string  `json:"version"`
-		OS       string  `json:"os"`
-		Arch     string  `json:"arch"`
+		Token        string  `json:"token"`
+		Hostname     string  `json:"hostname"`
+		Host         string  `json:"host"`
+		CPU          float64 `json:"cpu"`
+		CPUCores     int     `json:"cpu_cores"`
+		CPUModel     string  `json:"cpu_model"`
+		Mem          float64 `json:"mem"`
+		MemTotal     int64   `json:"mem_total"`
+		DiskTotal    int64   `json:"disk_total"`
+		DiskUsed     int64   `json:"disk_used"`
+		DiskUsage    float64 `json:"disk_usage"`
+		NetIn        int64   `json:"net_in"`
+		NetOut       int64   `json:"net_out"`
+		NetInSpeed   int64   `json:"net_in_speed"`
+		NetOutSpeed  int64   `json:"net_out_speed"`
+		Uptime       int     `json:"uptime"`
+		Version      string  `json:"version"`
+		XrayVersion  string  `json:"xray_version"`
+		OS           string  `json:"os"`
+		Kernel       string  `json:"kernel"`
+		Arch         string  `json:"arch"`
+		LoadAvg      string  `json:"load_avg"`
 	}
 	if err := json.Unmarshal(plaintext, &hb); err != nil {
 		jsonError(w, "invalid heartbeat data", http.StatusBadRequest)
 		return
 	}
-	// Use client IP if host not provided
+	clientIP := getClientIP(r)
 	if hb.Host == "" {
-		hb.Host = getClientIP(r)
+		hb.Host = clientIP
 	}
 	if hb.Hostname == "" {
 		hb.Hostname = hb.Host
 	}
-	// Auto-register: check if agent exists, if not create it
 	var agentID int
-	err = db.DB.QueryRow("SELECT id FROM agents WHERE host=?", hb.Host).Scan(&agentID)
-	if err != nil {
-		// Agent not found, auto-register
-		result, insertErr := db.DB.Exec(
-			`INSERT INTO agents (name, host, port, status, version, cpu_usage, mem_usage, net_in, net_out, uptime, last_heartbeat)
-			 VALUES (?, ?, 9527, 'online', ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
-			hb.Hostname, hb.Host, hb.Version, hb.CPU, hb.Mem, hb.NetIn, hb.NetOut, hb.Uptime)
-		if insertErr == nil {
-			newID, _ := result.LastInsertId()
-			logger.Infof("Agent", "Auto-registered new agent: %s (%s) id=%d", hb.Hostname, hb.Host, newID)
-		} else {
-			logger.Warnf("Agent", "Failed to auto-register agent %s: %v", hb.Host, insertErr)
+	// Preferred match: agent token supplied by the Agent (auto-install flow).
+	if token := strings.TrimSpace(hb.Token); token != "" {
+		_ = db.DB.QueryRow("SELECT id FROM agents WHERE token=?", token).Scan(&agentID)
+		if agentID == 0 {
+			// Token is valid-looking but unknown: auto-register a new row
+			// using that token so the very first heartbeat shows up in the
+			// panel without requiring pre-registration.
+			res, insErr := db.DB.Exec(
+				`INSERT INTO agents (name, host, port, status, token, version, xray_version, cpu_usage, cpu_cores, cpu_model,
+				                    mem_usage, mem_total, disk_total, disk_used, disk_usage,
+				                    net_in, net_out, net_in_speed, net_out_speed,
+				                    uptime, os_info, kernel, arch, load_avg, last_heartbeat)
+				 VALUES (?,?,9527,'online',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`,
+				hb.Hostname, hb.Host, token, hb.Version, hb.XrayVersion, hb.CPU, hb.CPUCores, hb.CPUModel,
+				hb.Mem, hb.MemTotal, hb.DiskTotal, hb.DiskUsed, hb.DiskUsage,
+				hb.NetIn, hb.NetOut, hb.NetInSpeed, hb.NetOutSpeed,
+				hb.Uptime, hb.OS, hb.Kernel, hb.Arch, hb.LoadAvg)
+			if insErr == nil {
+				newID, _ := res.LastInsertId()
+				agentID = int(newID)
+				logger.Infof("Agent", "Auto-registered new agent via token: %s (%s) id=%d", hb.Hostname, hb.Host, agentID)
+			} else {
+				logger.Warnf("Agent", "Token register failed for %s: %v", hb.Host, insErr)
+			}
 		}
-	} else {
-		// Agent exists, update
-		db.DB.Exec(
-			`UPDATE agents SET name=?, status='online', cpu_usage=?, mem_usage=?, net_in=?, net_out=?,
-			 uptime=?, version=?, last_heartbeat=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
-			 WHERE host=?`,
-			hb.Hostname, hb.CPU, hb.Mem, hb.NetIn, hb.NetOut, hb.Uptime, hb.Version, hb.Host)
 	}
-	// Resolve agent id (existing or just inserted)
+	// Fallback: match by host (legacy agents without token).
 	if agentID == 0 {
-		db.DB.QueryRow("SELECT id FROM agents WHERE host=?", hb.Host).Scan(&agentID)
+		_ = db.DB.QueryRow("SELECT id FROM agents WHERE host=?", hb.Host).Scan(&agentID)
+		if agentID == 0 {
+			res, insErr := db.DB.Exec(
+				`INSERT INTO agents (name, host, port, status, version, cpu_usage, mem_usage, net_in, net_out, uptime, last_heartbeat)
+				 VALUES (?, ?, 9527, 'online', ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+				hb.Hostname, hb.Host, hb.Version, hb.CPU, hb.Mem, hb.NetIn, hb.NetOut, hb.Uptime)
+			if insErr == nil {
+				newID, _ := res.LastInsertId()
+				agentID = int(newID)
+				logger.Infof("Agent", "Auto-registered new agent: %s (%s) id=%d", hb.Hostname, hb.Host, agentID)
+			} else {
+				logger.Warnf("Agent", "Failed to auto-register agent %s: %v", hb.Host, insErr)
+			}
+		}
+	}
+	if agentID > 0 {
+		db.DB.Exec(
+			`UPDATE agents SET name=?, host=?, status='online',
+			                  cpu_usage=?, cpu_cores=?, cpu_model=?,
+			                  mem_usage=?, mem_total=?,
+			                  disk_total=?, disk_used=?, disk_usage=?,
+			                  net_in=?, net_out=?, net_in_speed=?, net_out_speed=?,
+			                  uptime=?, version=?, xray_version=?,
+			                  os_info=?, kernel=?, arch=?, load_avg=?,
+			                  last_heartbeat=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+			 WHERE id=?`,
+			hb.Hostname, hb.Host,
+			hb.CPU, hb.CPUCores, hb.CPUModel,
+			hb.Mem, hb.MemTotal,
+			hb.DiskTotal, hb.DiskUsed, hb.DiskUsage,
+			hb.NetIn, hb.NetOut, hb.NetInSpeed, hb.NetOutSpeed,
+			hb.Uptime, hb.Version, hb.XrayVersion,
+			hb.OS, hb.Kernel, hb.Arch, hb.LoadAvg,
+			agentID)
 	}
 	respBody := buildAgentSpec(agentID)
 	respData, _ := crypto.Encrypt(respBody, commKey)
@@ -1324,9 +1434,11 @@ func handleGetSettings(w http.ResponseWriter, r *http.Request) {
 func handleGetPublicSettings(w http.ResponseWriter, r *http.Request) {
 	allowReg := getSetting("allow_register", "true")
 	siteName := getSetting("site_name", "NebulaPanel")
+	github := getSetting("github_url", "https://github.com/poouo/NebulaPanel")
 	jsonOK(w, map[string]string{
 		"allow_register": allowReg,
 		"site_name":      siteName,
+		"github_url":     github,
 	})
 }
 

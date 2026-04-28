@@ -6,14 +6,13 @@ services:
     restart: unless-stopped
     ports:
       - "3001:3001"
+    # 将数据目录挂载到当前 compose 文件所在目录的 ./data 下，
+    # 这样整机迁移或清空数据时只需操作当前目录即可（`rm -rf ./data` 即清空）。
     volumes:
-      - nebula-data:/data
+      - ./data:/data
     environment:
       - DB_PATH=/data/nebula.db
       - LISTEN=:3001
       - ADMIN_USER=admin
       - ADMIN_PASS=admin123
       # - JWT_SECRET=your-custom-secret
-
-volumes:
-  nebula-data:

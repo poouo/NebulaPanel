@@ -18,6 +18,21 @@ zh: {
   dashboard: '仪表盘', traffic: '流量统计', users: '用户管理', nodes: '节点管理',
   agents: 'Agent管理', templates: '订阅模板', audit: '审计管理', settings: '系统设置', logs: '系统日志',
   logout: '退出登录', open_source: '本项目开源地址',
+  github_url: '项目GitHub地址',
+  github_url_desc: '显示在侧边栏底部的“开源地址”链接。留空则隐藏。',
+  agent_list_view: '列表视图', agent_card_view: '卡片视图',
+  auto_refresh_on: '自动刷新中',
+  restart_agent: '重启Agent', restart_confirm: '确定下发重启指令么？',
+  restart_sent: '重启指令已下发，Agent 会在下次心跳时重启',
+  view_detail: '详情', hide_detail: '收起',
+  cpu_cores: 'CPU核心', cpu_model: 'CPU型号', mem_total: '内存总量',
+  disk: '硬盘', disk_usage: '硬盘使用率',
+  xray_version: 'Xray版本', agent_version: 'Agent版本',
+  kernel: '内核', os: '系统', load_avg: 'Load Avg', net_speed: '实时网速',
+  token: '注册 Token', copy_token: '复制 Token', rotate_token: '旋转 Token',
+  install_cmd_for: '安装命令 (针对该 Agent)',
+  add_agent_hint: '新增一个 Agent 记录时，面板会生成专属的 Token。将生成的安装命令在目标机器上执行即可在上线。',
+  fast_mode_tip: '当前处于页面将启用快速刷新（约 5s/次），离开后 Agent 自动降为正常间隔。',
   remark: '备注', entry_ip: '入口 IP', entry_ip_default: '默认使用上报 IP',
   audit_enabled_label: '全局审计开关', audit_off_default: '默认关闭',
   add_audit: '添加屏蔽规则', edit_audit: '编辑规则', domain: '域名/关键字',
@@ -98,6 +113,21 @@ en: {
   dashboard: 'Dashboard', traffic: 'Traffic', users: 'Users', nodes: 'Nodes',
   agents: 'Agents', templates: 'Templates', audit: 'Audit', settings: 'Settings', logs: 'Logs',
   logout: 'Logout', open_source: 'Open Source Project',
+  github_url: 'Project GitHub URL',
+  github_url_desc: 'Shown as the “open source” link at the bottom of the sidebar. Leave empty to hide.',
+  agent_list_view: 'List view', agent_card_view: 'Card view',
+  auto_refresh_on: 'Live refresh on',
+  restart_agent: 'Restart', restart_confirm: 'Send restart command to this agent?',
+  restart_sent: 'Restart queued. Agent will restart on next heartbeat.',
+  view_detail: 'Details', hide_detail: 'Hide',
+  cpu_cores: 'CPU cores', cpu_model: 'CPU model', mem_total: 'Memory',
+  disk: 'Disk', disk_usage: 'Disk usage',
+  xray_version: 'Xray version', agent_version: 'Agent version',
+  kernel: 'Kernel', os: 'OS', load_avg: 'Load Avg', net_speed: 'Net speed',
+  token: 'Registration token', copy_token: 'Copy token', rotate_token: 'Rotate token',
+  install_cmd_for: 'Install command for this agent',
+  add_agent_hint: 'When adding an agent, the panel mints a unique token. Run the generated install command on the target server to bring it online.',
+  fast_mode_tip: 'This page enables fast refresh (≈5s). Agents fall back to normal cadence automatically when you leave.',
   remark: 'Remark', entry_ip: 'Entry IP', entry_ip_default: 'Defaults to reported IP',
   audit_enabled_label: 'Global Audit Switch', audit_off_default: 'Disabled by default',
   add_audit: 'Add Block Rule', edit_audit: 'Edit Rule', domain: 'Domain / Keyword',
@@ -171,6 +201,7 @@ const state = {
   page: 'dashboard',
   lang: localStorage.getItem('lang') || 'zh',
   theme: localStorage.getItem('theme') || 'light',
+  githubUrl: localStorage.getItem('githubUrl') || 'https://github.com/poouo/NebulaPanel',
 };
 
 function t(key) { return (i18n[state.lang] || i18n.zh)[key] || key; }
@@ -413,6 +444,15 @@ async function loadCaptcha() {
 }
 async function checkNeedCaptcha() {
   try { const d = await api('GET', '/api/login/need-captcha'); needCaptcha = d.need; } catch(e) {}
+  try {
+    const r = await fetch('/api/settings/public').then(r => r.json());
+    if (r && r.code === 0 && r.data) {
+      if (r.data.github_url !== undefined) {
+        state.githubUrl = r.data.github_url || '';
+        localStorage.setItem('githubUrl', state.githubUrl);
+      }
+    }
+  } catch(e) {}
 }
 
 function renderLogin(app) {
@@ -566,8 +606,8 @@ function renderApp(app) {
           <button class="theme-toggle-btn" id="themeBtn">${state.theme==='light' ? icons.moon + ' ' + t('dark_mode') : icons.sun + ' ' + t('light_mode')}</button>
           <button class="lang-toggle-btn" id="langBtn">${state.lang==='zh' ? 'EN' : '中文'}</button>
         </div>
-        <a href="#" id="logoutBtn" style="color:var(--danger);display:flex;align-items:center;gap:6px;margin-top:10px">${icons.logout}<span>${t('logout')}</span></a>
-        <a href="https://github.com/poouo/NebulaPanel" target="_blank" rel="noopener" style="color:var(--text-dim);font-size:12px;display:block;margin-top:10px;text-decoration:none">${t('open_source')} →</a>
+        <a href="#" id="logoutBtn" class="logout-link" style="color:var(--danger);margin-top:10px">${icons.logout}<span>${t('logout')}</span></a>
+        ${state.githubUrl ? `<a href="${escHtml(state.githubUrl)}" target="_blank" rel="noopener" style="color:var(--text-dim);font-size:12px;display:block;margin-top:10px;text-decoration:none">${t('open_source')} →</a>` : ''}
       </div>
     </aside>
     <main class="main" id="mainContent"><div class="loading"><div class="spinner"></div></div></main>
@@ -592,6 +632,12 @@ function renderApp(app) {
 
 async function loadPage(page) {
   const main = document.getElementById('mainContent');
+  // Stop any previously registered page-local timers. Each page that wants
+  // to auto-refresh should push its timer id onto window._pageTimers.
+  if (window._pageTimers) {
+    window._pageTimers.forEach(id => clearInterval(id));
+  }
+  window._pageTimers = [];
   try {
     switch(page) {
       case 'dashboard': await renderDashboard(main); break;
@@ -849,61 +895,192 @@ async function showNodeModal(node) {
 }
 
 // ── Agents ──
-async function renderAgents(el) {
-  const agents = await api('GET', '/api/agents');
-  let html = `<div class="topbar"><h2>${t('agents')}</h2><div class="topbar-actions">
-    <button class="btn btn-primary" id="showScriptBtn">${t('install_script')}</button>
-  </div></div>`;
-  html += `<div class="card"><div class="table-wrap"><table>
-    <thead><tr><th>ID</th><th>${t('name')}</th><th>${t('host')}</th><th>${t('entry_ip')}</th><th>${t('remark')}</th><th>${t('status')}</th><th>${t('cpu')}</th><th>${t('memory')}</th><th>${t('net_in_out')}</th><th>${t('uptime')}</th><th>${t('last_hb')}</th><th>${t('actions')}</th></tr></thead>
-    <tbody>${agents.map(a => `<tr>
-      <td>${a.id}</td><td>${escHtml(a.name)}</td><td>${escHtml(a.host)}:${a.port}</td>
-      <td>${escHtml(a.display_ip||a.entry_ip||a.host)}${a.entry_ip?'':` <span style="color:var(--text-dim);font-size:11px">(${t('entry_ip_default')})</span>`}</td>
-      <td>${escHtml(a.remark||'')}</td>
-      <td><span class="badge badge-${a.status==='online'?'success':'danger'}">${a.status==='online'?t('online'):t('offline')}</span></td>
-      <td>${a.cpu_usage.toFixed(1)}%</td><td>${a.mem_usage.toFixed(1)}%</td>
-      <td>${formatBytes(a.net_in)} / ${formatBytes(a.net_out)}</td>
-      <td>${a.uptime > 0 ? Math.floor(a.uptime/3600)+'h' : '-'}</td>
-      <td style="font-size:12px">${a.last_heartbeat||'-'}</td>
-      <td><div class="btn-group">
+// ──────────── Agents page ────────────
+// Module-level state so the auto-refresh timer can re-render only when it
+// has data, and so the view choice survives across refreshes.
+let _agentsView = localStorage.getItem('agentsView') || 'card';
+let _agentsExpanded = new Set();
+
+function fmtBytes(n){ return formatBytes(n||0); }
+function fmtBps(n){ return (formatBytes(n||0) + '/s'); }
+function fmtUptime(sec){
+  sec = sec|0; if (sec <= 0) return '-';
+  const d = Math.floor(sec/86400), h = Math.floor((sec%86400)/3600), m = Math.floor((sec%3600)/60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+function barClass(p){ p = +p||0; if (p >= 90) return 'danger'; if (p >= 70) return 'warn'; return ''; }
+function fmtPct(p){ p = +p||0; return p.toFixed(1)+'%'; }
+
+function renderAgentCards(agents){
+  if (!agents.length) return `<div class="empty">${t('no_data')}</div>`;
+  return `<div class="agents-grid">${agents.map(a => `
+    <div class="agent-card" data-agent="${a.id}">
+      <div class="ac-head">
+        <div>
+          <div class="ac-name"><span class="status-dot ${a.status==='online'?'online':'offline'}"></span> ${escHtml(a.name)}</div>
+          <div class="ac-meta">${escHtml(a.display_ip||a.entry_ip||a.host||'-')}${a.port?':'+a.port:''} · ${escHtml(a.os||'-')} · ${escHtml(a.arch||'-')}</div>
+        </div>
+        <span class="badge badge-${a.status==='online'?'success':'danger'}">${a.status==='online'?t('online'):t('offline')}</span>
+      </div>
+      <div class="ac-chips">
+        ${a.cpu_cores?`<span class="chip">${a.cpu_cores} × ${t('cpu')}</span>`:''}
+        ${a.mem_total?`<span class="chip">${fmtBytes(a.mem_total)}</span>`:''}
+        ${a.disk_total?`<span class="chip">${fmtBytes(a.disk_total)} ${t('disk')}</span>`:''}
+        ${a.xray_version?`<span class="chip">Xray ${escHtml(a.xray_version)}</span>`:''}
+        ${a.version?`<span class="chip">Agent ${escHtml(a.version)}</span>`:''}
+      </div>
+      <div class="ac-row"><span class="label">${t('cpu')}</span><div class="bar ${barClass(a.cpu_usage)}"><span style="width:${Math.min(100,(+a.cpu_usage||0)).toFixed(1)}%"></span></div><span class="ac-pct">${fmtPct(a.cpu_usage)}</span></div>
+      <div class="ac-row"><span class="label">${t('memory')}</span><div class="bar ${barClass(a.mem_usage)}"><span style="width:${Math.min(100,(+a.mem_usage||0)).toFixed(1)}%"></span></div><span class="ac-pct">${fmtPct(a.mem_usage)}</span></div>
+      <div class="ac-row"><span class="label">${t('disk')}</span><div class="bar ${barClass(a.disk_usage)}"><span style="width:${Math.min(100,(+a.disk_usage||0)).toFixed(1)}%"></span></div><span class="ac-pct">${fmtPct(a.disk_usage)}</span></div>
+      <div class="ac-row" style="font-size:11px"><span class="label">${t('net_in_out')}</span><span style="flex:1">↓ ${fmtBytes(a.net_in)} / ↑ ${fmtBytes(a.net_out)}</span></div>
+      ${(a.net_in_speed||a.net_out_speed)?`<div class="ac-row" style="font-size:11px"><span class="label">${t('net_speed')}</span><span style="flex:1">↓ ${fmtBps(a.net_in_speed)} / ↑ ${fmtBps(a.net_out_speed)}</span></div>`:''}
+      <div class="ac-row" style="font-size:11px"><span class="label">${t('uptime')}</span><span style="flex:1">${fmtUptime(a.uptime)}</span></div>
+      <div class="ac-row" style="font-size:11px"><span class="label">${t('last_hb')}</span><span style="flex:1">${a.last_heartbeat||'-'}</span></div>
+      <div class="ac-foot">
+        <button class="btn btn-sm btn-outline" onclick="agentInstallCmd(${a.id})">${t('install_script')}</button>
+        <button class="btn btn-sm btn-outline" onclick="agentRestart(${a.id})">${t('restart_agent')}</button>
         <button class="btn btn-sm btn-outline" onclick="editAgent(${a.id})">${t('edit')}</button>
         <button class="btn btn-sm btn-danger" onclick="deleteAgent(${a.id})">${t('del')}</button>
-      </div></td></tr>`).join('')}${agents.length===0?`<tr><td colspan="12" class="empty">${t('no_data')}</td></tr>`:''}</tbody></table></div></div>`;
-  el.innerHTML = html;
-  document.getElementById('showScriptBtn').onclick = async () => {
-    // 获取真实的通信密钥
-    let commKey = '';
-    try {
-      const settings = await api('GET', '/api/settings');
-      commKey = settings.comm_key || '';
-    } catch(e) { commKey = 'YOUR_COMM_KEY'; }
-    const ghUrl = 'https://raw.githubusercontent.com/poouo/NebulaPanel/main/web/static/agent/install.sh';
-    const panelUrl = location.origin;
-    const installCmd = `bash <(curl -sL --connect-timeout 15 ${ghUrl} || curl -sL ${panelUrl}/static/agent/install.sh) install ${panelUrl} ${commKey}`;
-    const uninstallCmd = `bash <(curl -sL --connect-timeout 15 ${ghUrl} || curl -sL ${panelUrl}/static/agent/install.sh) uninstall`;
-    let mhtml = `<div class="modal-overlay" id="modalOverlay"><div class="modal" style="max-width:750px">
-      <div class="modal-header"><h3>${t('install_script')}</h3><button class="btn-icon" id="scriptCloseBtn">&times;</button></div>
-      <div class="modal-body">
-        <p style="margin-bottom:12px;color:var(--text-dim);font-size:13px">${t('install_cmd_hint')}</p>
-        <div class="copy-wrap" style="margin-bottom:16px">
-          <input class="form-control" readonly id="installCmd" style="font-family:monospace;font-size:12px">
-          <button class="btn btn-primary copy-btn" id="copyInstallBtn">${t('copy')}</button>
-        </div>
-        <p style="margin-bottom:8px;color:var(--text-dim);font-size:13px">${t('uninstall_cmd_hint')}</p>
-        <div class="copy-wrap">
-          <input class="form-control" readonly id="uninstallCmd" style="font-family:monospace;font-size:12px">
-          <button class="btn btn-primary copy-btn" id="copyUninstallBtn">${t('copy')}</button>
-        </div>
       </div>
-      <div class="modal-footer"><button class="btn btn-outline" id="scriptCloseBtn2">${t('close')}</button></div>
+    </div>`).join('')}</div>`;
+}
+
+function renderAgentTable(agents){
+  const rows = agents.map(a => {
+    const expanded = _agentsExpanded.has(a.id);
+    const detail = expanded ? `<tr class="agent-detail-row"><td colspan="11"><div class="agent-details">
+      <div><span class="k">${t('cpu_model')}</span><span class="v">${escHtml(a.cpu_model||'-')}</span></div>
+      <div><span class="k">${t('cpu_cores')}</span><span class="v">${a.cpu_cores||'-'}</span></div>
+      <div><span class="k">${t('mem_total')}</span><span class="v">${fmtBytes(a.mem_total)}</span></div>
+      <div><span class="k">${t('disk')}</span><span class="v">${fmtBytes(a.disk_used)} / ${fmtBytes(a.disk_total)} (${fmtPct(a.disk_usage)})</span></div>
+      <div><span class="k">${t('os')}</span><span class="v">${escHtml(a.os||'-')}</span></div>
+      <div><span class="k">${t('kernel')}</span><span class="v">${escHtml(a.kernel||'-')}</span></div>
+      <div><span class="k">${t('xray_version')}</span><span class="v">${escHtml(a.xray_version||'-')}</span></div>
+      <div><span class="k">${t('agent_version')}</span><span class="v">${escHtml(a.version||'-')}</span></div>
+      <div><span class="k">${t('load_avg')}</span><span class="v">${escHtml(a.load_avg||'-')}</span></div>
+      <div><span class="k">${t('net_speed')}</span><span class="v">↓ ${fmtBps(a.net_in_speed)} / ↑ ${fmtBps(a.net_out_speed)}</span></div>
+    </div></td></tr>` : '';
+    return `<tr>
+      <td>${a.id}</td>
+      <td>${escHtml(a.name)}<br><span style="color:var(--text-dim);font-size:11px">${escHtml(a.display_ip||a.entry_ip||a.host)}${a.port?':'+a.port:''}</span></td>
+      <td><span class="badge badge-${a.status==='online'?'success':'danger'}">${a.status==='online'?t('online'):t('offline')}</span></td>
+      <td>${a.cpu_cores?a.cpu_cores+' × ':''}${fmtPct(a.cpu_usage)}</td>
+      <td>${fmtPct(a.mem_usage)}${a.mem_total?` / ${fmtBytes(a.mem_total)}`:''}</td>
+      <td>${fmtPct(a.disk_usage)}${a.disk_total?` / ${fmtBytes(a.disk_total)}`:''}</td>
+      <td>${fmtBytes(a.net_in)} / ${fmtBytes(a.net_out)}</td>
+      <td>${escHtml(a.xray_version||'-')}</td>
+      <td>${fmtUptime(a.uptime)}</td>
+      <td style="font-size:12px">${a.last_heartbeat||'-'}</td>
+      <td><div class="btn-group">
+        <button class="btn btn-sm btn-outline" onclick="agentToggleDetail(${a.id})">${expanded?t('hide_detail'):t('view_detail')}</button>
+        <button class="btn btn-sm btn-outline" onclick="agentInstallCmd(${a.id})">${t('install_script')}</button>
+        <button class="btn btn-sm btn-outline" onclick="agentRestart(${a.id})">${t('restart_agent')}</button>
+        <button class="btn btn-sm btn-outline" onclick="editAgent(${a.id})">${t('edit')}</button>
+        <button class="btn btn-sm btn-danger" onclick="deleteAgent(${a.id})">${t('del')}</button>
+      </div></td></tr>${detail}`;
+  }).join('');
+  return `<div class="card"><div class="table-wrap"><table>
+    <thead><tr><th>ID</th><th>${t('name')}</th><th>${t('status')}</th><th>${t('cpu')}</th><th>${t('memory')}</th><th>${t('disk')}</th><th>${t('net_in_out')}</th><th>${t('xray_version')}</th><th>${t('uptime')}</th><th>${t('last_hb')}</th><th>${t('actions')}</th></tr></thead>
+    <tbody>${rows || `<tr><td colspan="11" class="empty">${t('no_data')}</td></tr>`}</tbody>
+  </table></div></div>`;
+}
+
+async function renderAgents(el){
+  const drawAll = async (firstDraw) => {
+    let agents = [];
+    try { agents = await api('GET', '/api/agents'); } catch(e) { return; }
+    const toolbar = `
+      <div class="agents-toolbar">
+        <div class="view-toggle">
+          <button id="viewCardBtn" class="${_agentsView==='card'?'active':''}">${t('agent_card_view')}</button>
+          <button id="viewListBtn" class="${_agentsView==='list'?'active':''}">${t('agent_list_view')}</button>
+        </div>
+        <div class="refresh-hint"><span class="dot"></span>${t('auto_refresh_on')}</div>
+      </div>`;
+    if (firstDraw) {
+      el.innerHTML = `
+        <div class="topbar">
+          <h2>${t('agents')}</h2>
+          <div class="topbar-actions">
+            <button class="btn btn-primary" id="addAgentBtn">+ ${t('add_agent')}</button>
+          </div>
+        </div>
+        <p style="color:var(--text-dim);font-size:12px;margin-bottom:12px">${t('add_agent_hint')}</p>
+        ${toolbar}
+        <div id="agentsPanel"></div>`;
+      document.getElementById('addAgentBtn').onclick = () => showAddAgentModal();
+      document.getElementById('viewCardBtn').onclick = () => { _agentsView='card'; localStorage.setItem('agentsView','card'); render(); };
+      document.getElementById('viewListBtn').onclick = () => { _agentsView='list'; localStorage.setItem('agentsView','list'); render(); };
+    }
+    const panel = document.getElementById('agentsPanel');
+    if (panel) panel.innerHTML = _agentsView==='card' ? renderAgentCards(agents) : renderAgentTable(agents);
+  };
+  const render = () => drawAll(true);
+  await drawAll(true);
+  // Enable fast-refresh mode while this page is open.
+  try { api('POST','/api/agents/fast-mode',{ seconds: 60 }); } catch(e) {}
+  const id = setInterval(async () => { await drawAll(false); try { api('POST','/api/agents/fast-mode',{ seconds: 60 }); } catch(e) {} }, 5000);
+  window._pageTimers.push(id);
+}
+
+window.agentToggleDetail = (id) => {
+  if (_agentsExpanded.has(id)) _agentsExpanded.delete(id); else _agentsExpanded.add(id);
+  loadPage('agents');
+};
+
+window.agentRestart = async (id) => {
+  if (!confirm(t('restart_confirm'))) return;
+  try { await api('POST','/api/agents/'+id+'/restart',{}); toast(t('restart_sent'),'success'); }
+  catch(e){ toast(e.message,'error'); }
+};
+
+window.agentInstallCmd = async (id) => {
+  try {
+    const data = await api('GET', '/api/agents/'+id+'/install-script');
+    const html = `<div class="modal-overlay" id="modalOverlay"><div class="modal" style="max-width:760px">
+      <div class="modal-header"><h3>${t('install_cmd_for')}: ${escHtml(data.name||('#'+id))}</h3><button class="btn-icon" onclick="closeModal()">&times;</button></div>
+      <div class="modal-body">
+        <p style="margin-bottom:6px;color:var(--text-dim);font-size:13px">${t('install_cmd_hint')}</p>
+        <div class="script-block" id="installCmdView">${escHtml(data.install_cmd||'')}</div>
+        <div style="margin-top:8px"><button class="btn btn-primary btn-sm" onclick="doCopy('installCmdView')">${t('copy')}</button></div>
+        <p style="margin-top:16px;margin-bottom:6px;color:var(--text-dim);font-size:13px">${t('uninstall_cmd_hint')}</p>
+        <div class="script-block" id="uninstallCmdView">${escHtml(data.uninstall_cmd||'')}</div>
+        <div style="margin-top:8px"><button class="btn btn-primary btn-sm" onclick="doCopy('uninstallCmdView')">${t('copy')}</button></div>
+        <p style="margin-top:16px;margin-bottom:6px;color:var(--text-dim);font-size:13px">${t('token')}</p>
+        <div class="copy-wrap"><input class="form-control" id="agTok" readonly value="${escHtml(data.token||'')}" style="font-family:monospace;font-size:12px"><button class="btn btn-primary copy-btn" onclick="doCopy('agTok')">${t('copy')}</button></div>
+      </div>
+      <div class="modal-footer"><button class="btn btn-outline" onclick="closeModal()">${t('close')}</button></div>
     </div></div>`;
-    document.body.insertAdjacentHTML('beforeend', mhtml);
-    document.getElementById('installCmd').value = installCmd;
-    document.getElementById('uninstallCmd').value = uninstallCmd;
-    document.getElementById('copyInstallBtn').onclick = () => doCopy('installCmd');
-    document.getElementById('copyUninstallBtn').onclick = () => doCopy('uninstallCmd');
-    document.getElementById('scriptCloseBtn').onclick = closeModal;
-    document.getElementById('scriptCloseBtn2').onclick = closeModal;
+    document.body.insertAdjacentHTML('beforeend', html);
+  } catch(e) { toast(e.message, 'error'); }
+};
+
+function showAddAgentModal(){
+  const html = `<div class="modal-overlay" id="modalOverlay"><div class="modal">
+    <div class="modal-header"><h3>${t('add_agent')}</h3><button class="btn-icon" onclick="closeModal()">&times;</button></div>
+    <div class="modal-body">
+      <div class="form-group"><label>${t('name')}</label><input class="form-control" id="newAgName" placeholder="node-1"></div>
+      <div class="form-group"><label>${t('remark')}</label><textarea class="form-control" id="newAgRemark" rows="2"></textarea></div>
+      <p style="color:var(--text-dim);font-size:12px">${t('add_agent_hint')}</p>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeModal()">${t('cancel')}</button>
+      <button class="btn btn-primary" id="createAgBtn">${t('save')}</button>
+    </div>
+  </div></div>`;
+  document.body.insertAdjacentHTML('beforeend', html);
+  document.getElementById('createAgBtn').onclick = async () => {
+    const name = document.getElementById('newAgName').value.trim();
+    if (!name) { toast('name required','error'); return; }
+    try {
+      const res = await api('POST', '/api/agents', { name, remark: document.getElementById('newAgRemark').value });
+      toast(t('agent_created'),'success');
+      closeModal();
+      loadPage('agents');
+      setTimeout(() => { if (res && res.id) window.agentInstallCmd(res.id); }, 200);
+    } catch(e){ toast(e.message,'error'); }
   };
 }
 window.deleteAgent = async (id) => { if (!confirm(t('confirm_delete_agent'))) return; await api('DELETE', '/api/agents/' + id); toast(t('agent_deleted'), 'success'); loadPage('agents'); };
@@ -1052,6 +1229,11 @@ async function renderSettings(el) {
   html += `<div class="card"><div class="card-header"><h3>${t('general')}</h3></div>
     <div class="form-group"><label>${t('site_name')}</label><input class="form-control" id="sSiteName" value="${escHtml(settings.site_name||'NebulaPanel')}"></div>
     <div class="form-group"><label>${t('panel_host')}</label><input class="form-control" id="sPanelHost" value="${escHtml(settings.panel_host||'')}"></div>
+    <div class="form-group">
+      <label>${t('github_url')}</label>
+      <input class="form-control" id="sGithubUrl" placeholder="https://github.com/owner/repo" value="${escHtml(settings.github_url||'')}">
+      <p style="font-size:12px;color:var(--text-dim);margin-top:6px">${t('github_url_desc')}</p>
+    </div>
     <div class="form-group"><label>${t('allow_register')}</label><select class="form-control" id="sAllowReg"><option value="true" ${settings.allow_register==='true'?'selected':''}>${t('yes')}</option><option value="false" ${settings.allow_register!=='true'?'selected':''}>${t('no')}</option></select></div>
   </div>`;
   html += `<div class="card"><div class="card-header"><h3>${t('comm_key')}</h3></div>
@@ -1094,6 +1276,7 @@ async function renderSettings(el) {
     const data = {
       site_name: document.getElementById('sSiteName').value.trim(),
       panel_host: document.getElementById('sPanelHost').value.trim(),
+      github_url: document.getElementById('sGithubUrl').value.trim(),
       allow_register: document.getElementById('sAllowReg').value,
       comm_key: document.getElementById('sCommKey').value.trim(),
       lockout_enabled: document.getElementById('sLockEnabled').checked ? 'true' : 'false',
@@ -1101,6 +1284,10 @@ async function renderSettings(el) {
       lockout_minutes: String(lockMin),
     };
     await api('PUT', '/api/settings', data); toast(t('settings_saved'), 'success');
+    state.githubUrl = data.github_url || '';
+    localStorage.setItem('githubUrl', state.githubUrl);
+    // Refresh sidebar so the link updates immediately.
+    render();
   };
   document.getElementById('exportBtn').onclick = async () => {
     const res = await fetch('/api/export', { headers: {'Authorization': 'Bearer ' + state.token} });

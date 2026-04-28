@@ -41,10 +41,13 @@ type AuditRule struct {
 // Spec is the full configuration the panel sends back via the heartbeat
 // response. It contains both nodes and audit rules.
 type Spec struct {
-	Nodes       []NodeSpec  `json:"nodes"`
-	Audit       bool        `json:"audit_enabled"`
-	AuditRules  []AuditRule `json:"audit_rules"`
-	XrayVersion string      `json:"xray_version"`
+	Status        string      `json:"status"`
+	Nodes         []NodeSpec  `json:"nodes"`
+	Audit         bool        `json:"audit_enabled"`
+	AuditRules    []AuditRule `json:"audit_rules"`
+	XrayVersion   string      `json:"xray_version"`
+	NextHeartbeat int         `json:"next_heartbeat"`
+	Restart       bool        `json:"restart"`
 }
 
 // Manager owns the running xray child process and reconciles its config.
@@ -151,7 +154,7 @@ func (m *Manager) Apply(spec Spec) error {
 	return nil
 }
 
-// XrayVersion returns the version of the bundled xray (best-effort).
+// XrayVersion returns a compact version string like "1.8.23" for the bundled xray.
 func (m *Manager) XrayVersion() string {
 	if _, err := os.Stat(m.bin); err != nil {
 		return ""
@@ -162,7 +165,12 @@ func (m *Manager) XrayVersion() string {
 	}
 	for _, line := range strings.Split(string(out), "\n") {
 		line = strings.TrimSpace(line)
+		// Typical first line: "Xray 1.8.23 (Xray, Penetrates Everything.) ..."
 		if strings.HasPrefix(line, "Xray ") {
+			parts := strings.Fields(line)
+			if len(parts) >= 2 {
+				return parts[1]
+			}
 			return line
 		}
 	}

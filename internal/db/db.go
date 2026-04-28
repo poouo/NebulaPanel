@@ -82,22 +82,38 @@ func migrate() {
 
 		// ── Agent 表 ──
 		`CREATE TABLE IF NOT EXISTS agents (
-			id              INTEGER PRIMARY KEY AUTOINCREMENT,
-			name            TEXT NOT NULL,
-			host            TEXT NOT NULL,
-			port            INTEGER NOT NULL DEFAULT 9527,
-			status          TEXT NOT NULL DEFAULT 'offline',
-			version         TEXT,
-			cpu_usage       REAL    DEFAULT 0,
-			mem_usage       REAL    DEFAULT 0,
-			net_in          INTEGER DEFAULT 0,
-			net_out         INTEGER DEFAULT 0,
-			uptime          INTEGER DEFAULT 0,
-			remark          TEXT    DEFAULT '',
-			entry_ip        TEXT    DEFAULT '',
-			last_heartbeat  DATETIME,
-			created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
-			updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+			id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+			name               TEXT NOT NULL,
+			host               TEXT NOT NULL,
+			port               INTEGER NOT NULL DEFAULT 9527,
+			status             TEXT NOT NULL DEFAULT 'offline',
+			token              TEXT DEFAULT '',
+			version            TEXT,
+			xray_version       TEXT DEFAULT '',
+			cpu_usage          REAL    DEFAULT 0,
+			cpu_cores          INTEGER NOT NULL DEFAULT 0,
+			cpu_model          TEXT    DEFAULT '',
+			mem_usage          REAL    DEFAULT 0,
+			mem_total          INTEGER NOT NULL DEFAULT 0,
+			disk_total         INTEGER NOT NULL DEFAULT 0,
+			disk_used          INTEGER NOT NULL DEFAULT 0,
+			disk_usage         REAL NOT NULL DEFAULT 0,
+			os_info            TEXT    DEFAULT '',
+			kernel             TEXT    DEFAULT '',
+			arch               TEXT    DEFAULT '',
+			load_avg           TEXT    DEFAULT '',
+			net_in             INTEGER DEFAULT 0,
+			net_out            INTEGER DEFAULT 0,
+			net_in_speed       INTEGER NOT NULL DEFAULT 0,
+			net_out_speed      INTEGER NOT NULL DEFAULT 0,
+			uptime             INTEGER DEFAULT 0,
+			remark             TEXT    DEFAULT '',
+			entry_ip           TEXT    DEFAULT '',
+			restart_pending    INTEGER NOT NULL DEFAULT 0,
+			report_fast_until  DATETIME,
+			last_heartbeat     DATETIME,
+			created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
 
 		// ── 订阅模板表 ──
@@ -193,6 +209,23 @@ func alter() {
 		{"agents", "remark", "ALTER TABLE agents ADD COLUMN remark TEXT DEFAULT ''"},
 		{"agents", "entry_ip", "ALTER TABLE agents ADD COLUMN entry_ip TEXT DEFAULT ''"},
 		{"nodes", "agent_id", "ALTER TABLE nodes ADD COLUMN agent_id INTEGER NOT NULL DEFAULT 0"},
+		// v2.1: agent token-based auto registration & richer host metrics
+		{"agents", "token", "ALTER TABLE agents ADD COLUMN token TEXT DEFAULT ''"},
+		{"agents", "cpu_cores", "ALTER TABLE agents ADD COLUMN cpu_cores INTEGER NOT NULL DEFAULT 0"},
+		{"agents", "cpu_model", "ALTER TABLE agents ADD COLUMN cpu_model TEXT DEFAULT ''"},
+		{"agents", "mem_total", "ALTER TABLE agents ADD COLUMN mem_total INTEGER NOT NULL DEFAULT 0"},
+		{"agents", "disk_total", "ALTER TABLE agents ADD COLUMN disk_total INTEGER NOT NULL DEFAULT 0"},
+		{"agents", "disk_used", "ALTER TABLE agents ADD COLUMN disk_used INTEGER NOT NULL DEFAULT 0"},
+		{"agents", "disk_usage", "ALTER TABLE agents ADD COLUMN disk_usage REAL NOT NULL DEFAULT 0"},
+		{"agents", "os_info", "ALTER TABLE agents ADD COLUMN os_info TEXT DEFAULT ''"},
+		{"agents", "kernel", "ALTER TABLE agents ADD COLUMN kernel TEXT DEFAULT ''"},
+		{"agents", "arch", "ALTER TABLE agents ADD COLUMN arch TEXT DEFAULT ''"},
+		{"agents", "xray_version", "ALTER TABLE agents ADD COLUMN xray_version TEXT DEFAULT ''"},
+		{"agents", "load_avg", "ALTER TABLE agents ADD COLUMN load_avg TEXT DEFAULT ''"},
+		{"agents", "net_in_speed", "ALTER TABLE agents ADD COLUMN net_in_speed INTEGER NOT NULL DEFAULT 0"},
+		{"agents", "net_out_speed", "ALTER TABLE agents ADD COLUMN net_out_speed INTEGER NOT NULL DEFAULT 0"},
+		{"agents", "restart_pending", "ALTER TABLE agents ADD COLUMN restart_pending INTEGER NOT NULL DEFAULT 0"},
+		{"agents", "report_fast_until", "ALTER TABLE agents ADD COLUMN report_fast_until DATETIME"},
 	}
 	for _, c := range cols {
 		if !columnExists(c.Table, c.Name) {
@@ -204,8 +237,8 @@ func alter() {
 
 	// default settings
 	defaults := map[string]string{
-		"audit_enabled":  "false",
-		"github_url":     "https://github.com/poouo/NebulaPanel",
+		"audit_enabled": "false",
+		"github_url":    "https://github.com/poouo/NebulaPanel",
 	}
 	for k, v := range defaults {
 		var val string

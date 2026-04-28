@@ -53,23 +53,36 @@ services:
 
 ## Agent 节点安装
 
-在面板的"Agents"页面中，点击"Install Script"按钮，即可获取一键安装脚本。
-
-在目标节点服务器上执行以下命令即可完成安装：
+在面板 **Agents** 页面点击 **+ 添加 Agent**，面板会为该 Agent 生成专属的 Token，并在弹窗中给出一键安装命令。将命令复制到目标服务器执行即可自动上线：
 
 ```bash
-curl -sL http://你的面板IP:3001/static/agent/install.sh | bash -s install http://你的面板IP:3001 你的通信密钥
+bash <(curl -sL https://你的面板域名/static/agent/install.sh) install https://你的面板域名 <AGENT_TOKEN>
 ```
 
-Agent 安装后会自动作为 systemd 服务运行，并定期向面板汇报心跳和流量数据。
+安装脚本会自动完成以下工作：
 
-## 卸载 Agent
+1. 从 [XTLS/Xray-core](https://github.com/XTLS/Xray-core/releases/latest) 下载对应架构的 **最新版** 内核，安装到 `/opt/nebula-agent/xray/`。
+2. 通过 `POST /api/agent/bootstrap` 以 Token 换取通信密钥。
+3. 安装 NebulaPanel Agent 二进制到 `/usr/local/bin/nebula-agent`，写入 systemd 单元并启动服务。
+4. Agent 启动后采集 CPU 核心/型号、内存/硬盘/OS/内核/Load Avg/实时网速等详细信息和 Xray 版本，以 AES-256-GCM 加密上报。面板根据 Token 自动绑定记录，无需再手工填 IP/端口。
 
-如果需要卸载 Agent，可以在节点服务器上执行：
+在 **Agents** 页面容易看见 Agent 的实时状态：
 
+- 支持 **卡片视图 / 列表视图** 一键切换；
+- 页面打开时 Agent 自动切换到快速心跳（约 3–5s），离开后回落正常间隔；
+- 页面每 5s 自动刷新，展示 CPU%、内存%、硬盘%、实时网速、核心数、Xray 版本、Agent 版本等；
+- 支持 **一键重启**，指令随心跳下发、systemd 拉起。
+
+### 卸载 Agent
 ```bash
-curl -sL http://你的面板IP:3001/static/agent/install.sh | bash -s uninstall
+bash <(curl -sL https://你的面板域名/static/agent/install.sh) uninstall
 ```
+
+### 数据目录与迁移
+面板容器的数据目录挂载在 Docker Compose 当前目录下的 `./data`。
+
+- **迁移**：`docker compose down` 后复制整个项目目录到新服务器，再 `docker compose up -d` 即可。
+- **清空**：`docker compose down && rm -rf ./data && docker compose up -d`。
 
 ## 许可证
 

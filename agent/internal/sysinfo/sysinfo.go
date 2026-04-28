@@ -2,48 +2,189 @@ package sysinfo
 
 import (
 	"bufio"
+	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
 // Stats represents one snapshot of host stats.
 type Stats struct {
-	Hostname string  `json:"hostname"`
-	Host     string  `json:"host"`
-	CPU      float64 `json:"cpu"`
-	Mem      float64 `json:"mem"`
-	MemTotal int64   `json:"mem_total"`
-	NetIn    int64   `json:"net_in"`
-	NetOut   int64   `json:"net_out"`
-	Uptime   int     `json:"uptime"`
-	Version  string  `json:"version"`
-	OS       string  `json:"os"`
-	Arch     string  `json:"arch"`
+	Token       string  `json:"token,omitempty"`
+	Hostname    string  `json:"hostname"`
+	Host        string  `json:"host"`
+	CPU         float64 `json:"cpu"`
+	CPUCores    int     `json:"cpu_cores"`
+	CPUModel    string  `json:"cpu_model"`
+	Mem         float64 `json:"mem"`
+	MemTotal    int64   `json:"mem_total"`
+	DiskTotal   int64   `json:"disk_total"`
+	DiskUsed    int64   `json:"disk_used"`
+	DiskUsage   float64 `json:"disk_usage"`
+	NetIn       int64   `json:"net_in"`
+	NetOut      int64   `json:"net_out"`
+	NetInSpeed  int64   `json:"net_in_speed"`
+	NetOutSpeed int64   `json:"net_out_speed"`
+	Uptime      int     `json:"uptime"`
+	Version     string  `json:"version"`
+	XrayVersion string  `json:"xray_version,omitempty"`
+	OS          string  `json:"os"`
+	Kernel      string  `json:"kernel"`
+	Arch        string  `json:"arch"`
+	LoadAvg     string  `json:"load_avg"`
 }
 
 var (
-	prevCPUTotal uint64
-	prevCPUIdle  uint64
+	prevCPUTotal  uint64
+	prevCPUIdle   uint64
+	prevNetIn     int64
+	prevNetOut    int64
+	prevNetSample time.Time
+	cachedCores   int
+	cachedModel   string
+	cachedKernel  string
+	cachedOSPre   string
 )
 
 // Collect returns current snapshot. version is reported back to the panel.
 func Collect(version string) Stats {
 	s := Stats{
 		Version: version,
-		OS:      runtime.GOOS,
+		OS:      osPretty(),
 		Arch:    runtime.GOARCH,
+		Kernel:  kernelVersion(),
 	}
 	s.Hostname, _ = os.Hostname()
 	s.Host = guessOutboundIP()
 	s.Uptime = readUptime()
 	s.MemTotal, s.Mem = readMemory()
 	s.CPU = readCPU()
+	s.CPUCores, s.CPUModel = cpuInfo()
+	s.DiskTotal, s.DiskUsed, s.DiskUsage = diskUsage("/")
 	s.NetIn, s.NetOut = readNet()
+	s.NetInSpeed, s.NetOutSpeed = netSpeed(s.NetIn, s.NetOut)
+	s.LoadAvg = loadAverage()
 	return s
+}
+
+func osPretty() string {
+	if cachedOSPre != "" {
+		return cachedOSPre
+	}
+	if b, err := os.ReadFile("/etc/os-release"); err == nil {
+		for _, line := range strings.Split(string(b), "\n") {
+			if strings.HasPrefix(line, "PRETTY_NAME=") {
+				v := strings.TrimPrefix(line, "PRETTY_NAME=")
+				cachedOSPre = strings.Trim(v, `"`)
+				return cachedOSPre
+			}
+		}
+	}
+	cachedOSPre = runtime.GOOS
+	return cachedOSPre
+}
+
+func kernelVersion() string {
+	if cachedKernel != "" {
+		return cachedKernel
+	}
+	var u syscall.Utsname
+	if err := syscall.Uname(&u); err == nil {
+		b := make([]byte, 0, len(u.Release))
+		for _, c := range u.Release {
+			if c == 0 {
+				break
+			}
+			b = append(b, byte(c))
+		}
+		cachedKernel = string(b)
+		return cachedKernel
+	}
+	if b, err := exec.Command("uname", "-r").Output(); err == nil {
+		cachedKernel = strings.TrimSpace(string(b))
+		return cachedKernel
+	}
+	return ""
+}
+
+func cpuInfo() (int, string) {
+	if cachedCores > 0 {
+		return cachedCores, cachedModel
+	}
+	cachedCores = runtime.NumCPU()
+	if b, err := os.ReadFile("/proc/cpuinfo"); err == nil {
+		for _, line := range strings.Split(string(b), "\n") {
+			if strings.HasPrefix(line, "model name") {
+				parts := strings.SplitN(line, ":", 2)
+				if len(parts) == 2 {
+					cachedModel = strings.TrimSpace(parts[1])
+					break
+				}
+			}
+		}
+	}
+	if cachedModel == "" {
+		cachedModel = runtime.GOARCH
+	}
+	return cachedCores, cachedModel
+}
+
+func diskUsage(path string) (int64, int64, float64) {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(path, &st); err != nil {
+		return 0, 0, 0
+	}
+	total := int64(st.Blocks) * int64(st.Bsize)
+	free := int64(st.Bavail) * int64(st.Bsize)
+	used := total - free
+	if total == 0 {
+		return 0, 0, 0
+	}
+	pct := float64(used) / float64(total) * 100.0
+	return total, used, pct
+}
+
+func loadAverage() string {
+	b, err := os.ReadFile("/proc/loadavg")
+	if err != nil {
+		return ""
+	}
+	f := strings.Fields(string(b))
+	if len(f) < 3 {
+		return ""
+	}
+	return fmt.Sprintf("%s %s %s", f[0], f[1], f[2])
+}
+
+func netSpeed(curIn, curOut int64) (int64, int64) {
+	now := time.Now()
+	if prevNetSample.IsZero() {
+		prevNetIn = curIn
+		prevNetOut = curOut
+		prevNetSample = now
+		return 0, 0
+	}
+	dt := now.Sub(prevNetSample).Seconds()
+	if dt <= 0 {
+		return 0, 0
+	}
+	inSpd := int64(float64(curIn-prevNetIn) / dt)
+	outSpd := int64(float64(curOut-prevNetOut) / dt)
+	if inSpd < 0 {
+		inSpd = 0
+	}
+	if outSpd < 0 {
+		outSpd = 0
+	}
+	prevNetIn = curIn
+	prevNetOut = curOut
+	prevNetSample = now
+	return inSpd, outSpd
 }
 
 func guessOutboundIP() string {
@@ -54,7 +195,6 @@ func guessOutboundIP() string {
 			return a.IP.String()
 		}
 	}
-	// fallback: first non-loopback IPv4
 	addrs, _ := net.InterfaceAddrs()
 	for _, a := range addrs {
 		if ipnet, ok := a.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
