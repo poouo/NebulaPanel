@@ -28,11 +28,11 @@ COPY web/ /app/web/
 RUN mkdir -p /data
 
 ENV DB_PATH=/data/nebula.db
-ENV LISTEN=:3000
+ENV LISTEN=:3001
 ENV ADMIN_USER=admin
 ENV ADMIN_PASS=admin123
 
-EXPOSE 3000
+EXPOSE 3001
 
 VOLUME ["/data"]
 

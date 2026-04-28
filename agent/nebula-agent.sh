@@ -11,7 +11,7 @@ if [ -f "$CONF_FILE" ]; then
     source "$CONF_FILE"
 fi
 
-PANEL_URL="${PANEL_URL:-http://localhost:3000}"
+PANEL_URL="${PANEL_URL:-http://localhost:3001}"
 COMM_KEY="${COMM_KEY:-}"
 HEARTBEAT_INTERVAL="${HEARTBEAT_INTERVAL:-30}"
 TRAFFIC_INTERVAL="${TRAFFIC_INTERVAL:-60}"

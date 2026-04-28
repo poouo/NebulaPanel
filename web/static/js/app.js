@@ -722,7 +722,7 @@ async function renderSettings(el) {
   let html = `<div class="topbar"><h2>Settings</h2></div>`;
   html += `<div class="card"><div class="card-header"><h3>General</h3></div>
     <div class="form-group"><label>Site Name</label><input class="form-control" id="sSiteName" value="${escHtml(settings.site_name||'NebulaPanel')}"></div>
-    <div class="form-group"><label>Panel Host (for Agent script, e.g. your-domain.com:3000)</label><input class="form-control" id="sPanelHost" value="${escHtml(settings.panel_host||'')}"></div>
+    <div class="form-group"><label>Panel Host (for Agent script, e.g. your-domain.com:3001)</label><input class="form-control" id="sPanelHost" value="${escHtml(settings.panel_host||'')}"></div>
     <div class="form-group"><label>Allow Registration</label><select class="form-control" id="sAllowReg"><option value="true" ${settings.allow_register==='true'?'selected':''}>Yes</option><option value="false" ${settings.allow_register!=='true'?'selected':''}>No</option></select></div>
   </div>`;
   html += `<div class="card"><div class="card-header"><h3>Communication Key</h3></div>

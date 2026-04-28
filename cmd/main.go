@@ -21,7 +21,7 @@ func main() {
 
 	// 配置
 	dbPath := getEnv("DB_PATH", "/data/nebula.db")
-	listenAddr := getEnv("LISTEN", ":3000")
+	listenAddr := getEnv("LISTEN", ":3001")
 	jwtSecret := getEnv("JWT_SECRET", "")
 	adminUser := getEnv("ADMIN_USER", "admin")
 	adminPass := getEnv("ADMIN_PASS", "admin123")

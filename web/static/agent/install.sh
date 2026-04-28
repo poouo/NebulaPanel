@@ -58,7 +58,7 @@ install_agent() {
         echo -e "${CYAN}║       NebulaPanel Agent Installer        ║${NC}"
         echo -e "${CYAN}╚══════════════════════════════════════════╝${NC}"
         echo ""
-        read -p "Panel URL (e.g. http://your-server:3000): " panel_url
+        read -p "Panel URL (e.g. http://your-server:3001): " panel_url
         read -p "Communication Key: " comm_key
         echo ""
     fi
@@ -179,7 +179,7 @@ show_help() {
     echo "  $0 help                              Show this help"
     echo ""
     echo "Examples:"
-    echo "  curl -sL URL/static/agent/install.sh | bash -s install http://panel:3000 your_key"
+    echo "  curl -sL URL/static/agent/install.sh | bash -s install http://panel:3001 your_key"
     echo "  curl -sL URL/static/agent/install.sh | bash -s uninstall"
     echo ""
 }

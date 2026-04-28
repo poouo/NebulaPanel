@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   nebula-panel:
     build: .
@@ -7,12 +5,12 @@ services:
     container_name: nebula-panel
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "3001:3001"
     volumes:
       - nebula-data:/data
     environment:
       - DB_PATH=/data/nebula.db
-      - LISTEN=:3000
+      - LISTEN=:3001
       - ADMIN_USER=admin
       - ADMIN_PASS=admin123
       # - JWT_SECRET=your-custom-secret
