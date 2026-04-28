@@ -1,113 +1,105 @@
-#!/bin/bash
-# NebulaPanel Agent - One-Click Install / Uninstall Script
+#!/usr/bin/env bash
+# NebulaPanel Agent (Go) one-click installer / uninstaller.
+#
 # Usage:
-#   Install:   curl -sL <URL>/static/agent/install.sh | bash -s install <PANEL_URL> <COMM_KEY>
-#   Uninstall: curl -sL <URL>/static/agent/install.sh | bash -s uninstall
+#   bash install.sh install <PANEL_URL> <COMM_KEY> [AGENT_PORT]
+#   bash install.sh uninstall
+#
+# Pulls the prebuilt Go agent binary from the panel (with GitHub fallback),
+# installs it to /opt/nebula-agent, configures /opt/nebula-agent/agent.conf
+# and registers a systemd service called `nebula-agent`.
 
-set -e
-
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-NC='\033[0m'
+set -euo pipefail
 
 INSTALL_DIR="/opt/nebula-agent"
-SERVICE_NAME="nebula-agent"
-REPO_URL="https://raw.githubusercontent.com/poouo/NebulaPanel/main/agent/nebula-agent.sh"
+BIN_PATH="${INSTALL_DIR}/nebula-agent"
+CONF_PATH="${INSTALL_DIR}/agent.conf"
+LOG_DIR="${INSTALL_DIR}/logs"
+SERVICE_FILE="/etc/systemd/system/nebula-agent.service"
+GH_BIN_BASE="https://raw.githubusercontent.com/poouo/NebulaPanel/main/web/static/agent/bin"
 
-log_info()  { echo -e "${GREEN}[INFO]${NC} $1"; }
-log_warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
-log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+c_red()    { printf '\033[31m%s\033[0m\n' "$*"; }
+c_green()  { printf '\033[32m%s\033[0m\n' "$*"; }
+c_yellow() { printf '\033[33m%s\033[0m\n' "$*"; }
+c_blue()   { printf '\033[34m%s\033[0m\n' "$*"; }
 
-check_root() {
-    if [ "$(id -u)" -ne 0 ]; then
-        log_error "This script must be run as root"
-        exit 1
-    fi
+require_root() {
+  if [ "$(id -u)" -ne 0 ]; then
+    c_red "[!] Please run this script as root (or with sudo)."
+    exit 1
+  fi
 }
 
-check_deps() {
-    local missing=""
-    for cmd in curl openssl xxd base64; do
-        if ! command -v "$cmd" &>/dev/null; then
-            missing="$missing $cmd"
-        fi
-    done
-    if [ -n "$missing" ]; then
-        log_warn "Missing dependencies:$missing"
-        log_info "Installing dependencies..."
-        if command -v apt-get &>/dev/null; then
-            apt-get update -qq && apt-get install -y -qq curl openssl xxd coreutils
-        elif command -v yum &>/dev/null; then
-            yum install -y curl openssl vim-common coreutils
-        elif command -v apk &>/dev/null; then
-            apk add --no-cache curl openssl coreutils
-        else
-            log_error "Cannot install dependencies automatically. Please install:$missing"
-            exit 1
-        fi
-    fi
+detect_arch() {
+  case "$(uname -m)" in
+    x86_64|amd64)  echo "amd64" ;;
+    aarch64|arm64) echo "arm64" ;;
+    *) c_red "[!] Unsupported CPU architecture: $(uname -m)"; exit 1 ;;
+  esac
+}
+
+ensure_curl() {
+  if command -v curl >/dev/null 2>&1; then return; fi
+  c_yellow "[*] Installing curl..."
+  if   command -v apt-get >/dev/null 2>&1; then apt-get update -y && apt-get install -y curl
+  elif command -v yum     >/dev/null 2>&1; then yum install -y curl
+  elif command -v apk     >/dev/null 2>&1; then apk add --no-cache curl
+  else c_red "[!] Cannot find apt/yum/apk to install curl, please install it manually."; exit 1
+  fi
+}
+
+download_binary() {
+  local panel_url="$1" arch="$2" target="$3"
+  local panel_path="${panel_url%/}/static/agent/bin/nebula-agent-linux-${arch}"
+  local gh_path="${GH_BIN_BASE}/nebula-agent-linux-${arch}"
+
+  c_blue "[*] Downloading agent binary (arch=${arch})"
+  c_blue "    primary : ${panel_path}"
+  if curl -fsSL --connect-timeout 15 -o "${target}" "${panel_path}"; then
+    c_green "[+] Downloaded from panel."
+    return 0
+  fi
+  c_yellow "[~] Panel download failed, falling back to GitHub..."
+  c_blue   "    fallback: ${gh_path}"
+  if curl -fsSL --connect-timeout 30 -o "${target}" "${gh_path}"; then
+    c_green "[+] Downloaded from GitHub."
+    return 0
+  fi
+  c_red "[!] Failed to download agent binary from both panel and GitHub."
+  exit 1
 }
 
 install_agent() {
-    local panel_url="$1"
-    local comm_key="$2"
+  local panel_url="${1:-}" comm_key="${2:-}" agent_port="${3:-9527}"
 
-    if [ -z "$panel_url" ] || [ -z "$comm_key" ]; then
-        echo ""
-        echo -e "${CYAN}╔══════════════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║       NebulaPanel Agent Installer        ║${NC}"
-        echo -e "${CYAN}╚══════════════════════════════════════════╝${NC}"
-        echo ""
-        read -p "Panel URL (e.g. http://your-server:3001): " panel_url
-        read -p "Communication Key: " comm_key
-        echo ""
-    fi
+  if [ -z "${panel_url}" ] || [ -z "${comm_key}" ]; then
+    c_red "[!] Usage: $0 install <PANEL_URL> <COMM_KEY> [AGENT_PORT]"
+    exit 1
+  fi
 
-    if [ -z "$panel_url" ] || [ -z "$comm_key" ]; then
-        log_error "Panel URL and Communication Key are required"
-        exit 1
-    fi
+  require_root
+  ensure_curl
 
-    log_info "Installing NebulaPanel Agent..."
+  systemctl stop nebula-agent 2>/dev/null || true
 
-    # Stop existing service
-    if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
-        log_info "Stopping existing agent..."
-        systemctl stop "$SERVICE_NAME"
-    fi
+  local arch; arch="$(detect_arch)"
+  install -d -m 0755 "${INSTALL_DIR}" "${LOG_DIR}"
 
-    # Create directory
-    mkdir -p "$INSTALL_DIR"
+  download_binary "${panel_url}" "${arch}" "${BIN_PATH}.new"
+  chmod +x "${BIN_PATH}.new"
+  mv -f "${BIN_PATH}.new" "${BIN_PATH}"
 
-    # Download agent script - try GitHub first (15s timeout), fallback to panel
-    log_info "Downloading agent script from GitHub..."
-    if curl -sL --connect-timeout 15 --max-time 30 "$REPO_URL" -o "$INSTALL_DIR/nebula-agent.sh" 2>/dev/null && [ -s "$INSTALL_DIR/nebula-agent.sh" ]; then
-        log_info "Downloaded from GitHub successfully"
-    else
-        log_warn "GitHub unreachable (15s timeout), downloading from panel server..."
-        if curl -sL --connect-timeout 15 --max-time 30 "${panel_url}/static/agent/nebula-agent.sh" -o "$INSTALL_DIR/nebula-agent.sh" 2>/dev/null && [ -s "$INSTALL_DIR/nebula-agent.sh" ]; then
-            log_info "Downloaded from panel server successfully"
-        else
-            log_error "Failed to download agent script from both GitHub and panel"
-            exit 1
-        fi
-    fi
-    chmod +x "$INSTALL_DIR/nebula-agent.sh"
-
-    # Write config
-    cat > "$INSTALL_DIR/agent.conf" <<EOF
+  cat > "${CONF_PATH}" <<EOF
 PANEL_URL=${panel_url}
 COMM_KEY=${comm_key}
-HEARTBEAT_INTERVAL=30
-TRAFFIC_INTERVAL=60
+AGENT_PORT=${agent_port}
+LOG_DIR=${LOG_DIR}
+LOG_RETENTION_DAYS=30
+HEARTBEAT_INTERVAL=15
 EOF
-    chmod 600 "$INSTALL_DIR/agent.conf"
-    log_info "Config written to $INSTALL_DIR/agent.conf"
+  chmod 0600 "${CONF_PATH}"
 
-    # Create systemd service
-    cat > /etc/systemd/system/${SERVICE_NAME}.service <<EOF
+  cat > "${SERVICE_FILE}" <<EOF
 [Unit]
 Description=NebulaPanel Agent
 After=network-online.target
@@ -115,94 +107,45 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/bin/bash ${INSTALL_DIR}/nebula-agent.sh
+WorkingDirectory=${INSTALL_DIR}
+EnvironmentFile=${CONF_PATH}
+ExecStart=${BIN_PATH} -config ${CONF_PATH}
 Restart=always
-RestartSec=10
-EnvironmentFile=${INSTALL_DIR}/agent.conf
-StandardOutput=journal
-StandardError=journal
+RestartSec=5
+LimitNOFILE=65535
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-    # Enable and start
-    systemctl daemon-reload
-    systemctl enable "$SERVICE_NAME"
-    systemctl start "$SERVICE_NAME"
+  systemctl daemon-reload
+  systemctl enable nebula-agent >/dev/null 2>&1 || true
+  systemctl restart nebula-agent
 
-    echo ""
-    echo -e "${GREEN}╔══════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}║    NebulaPanel Agent Installed!           ║${NC}"
-    echo -e "${GREEN}╚══════════════════════════════════════════╝${NC}"
-    echo ""
-    log_info "Install directory: $INSTALL_DIR"
-    log_info "Config file: $INSTALL_DIR/agent.conf"
-    log_info "Service: $SERVICE_NAME"
-    echo ""
-    log_info "Commands:"
-    echo "  Status:  systemctl status $SERVICE_NAME"
-    echo "  Logs:    journalctl -u $SERVICE_NAME -f"
-    echo "  Restart: systemctl restart $SERVICE_NAME"
-    echo "  Stop:    systemctl stop $SERVICE_NAME"
-    echo ""
+  c_green "[OK] NebulaPanel Agent installed."
+  c_green "    Binary  : ${BIN_PATH}"
+  c_green "    Config  : ${CONF_PATH}"
+  c_green "    Logs    : ${LOG_DIR} (retention: 30 days)"
+  c_green "    Service : systemctl status nebula-agent"
 }
 
 uninstall_agent() {
-    echo ""
-    echo -e "${YELLOW}╔══════════════════════════════════════════╗${NC}"
-    echo -e "${YELLOW}║    NebulaPanel Agent Uninstaller          ║${NC}"
-    echo -e "${YELLOW}╚══════════════════════════════════════════╝${NC}"
-    echo ""
-
-    log_info "Stopping agent service..."
-    systemctl stop "$SERVICE_NAME" 2>/dev/null || true
-    systemctl disable "$SERVICE_NAME" 2>/dev/null || true
-
-    log_info "Removing service file..."
-    rm -f "/etc/systemd/system/${SERVICE_NAME}.service"
-    systemctl daemon-reload
-
-    log_info "Removing agent files..."
-    rm -rf "$INSTALL_DIR"
-
-    echo ""
-    log_info "NebulaPanel Agent has been completely uninstalled!"
-    echo ""
+  require_root
+  systemctl stop nebula-agent 2>/dev/null || true
+  systemctl disable nebula-agent 2>/dev/null || true
+  rm -f "${SERVICE_FILE}"
+  systemctl daemon-reload || true
+  rm -rf "${INSTALL_DIR}"
+  c_green "[OK] NebulaPanel Agent removed."
 }
 
-show_help() {
-    echo ""
-    echo "NebulaPanel Agent Installer"
-    echo ""
-    echo "Usage:"
-    echo "  $0 install [PANEL_URL] [COMM_KEY]   Install agent"
-    echo "  $0 uninstall                         Uninstall agent"
-    echo "  $0 help                              Show this help"
-    echo ""
-    echo "Examples:"
-    echo "  curl -sL URL/static/agent/install.sh | bash -s install http://panel:3001 your_key"
-    echo "  curl -sL URL/static/agent/install.sh | bash -s uninstall"
-    echo ""
+main() {
+  local cmd="${1:-install}"; shift || true
+  case "${cmd}" in
+    install)   install_agent "$@" ;;
+    uninstall) uninstall_agent ;;
+    *) c_red "Usage: $0 {install <PANEL_URL> <COMM_KEY> [AGENT_PORT] | uninstall}"; exit 1 ;;
+  esac
 }
 
-# ── Main ──
-check_root
-
-case "${1:-install}" in
-    install)
-        check_deps
-        install_agent "$2" "$3"
-        ;;
-    uninstall)
-        uninstall_agent
-        ;;
-    help|--help|-h)
-        show_help
-        ;;
-    *)
-        log_error "Unknown command: $1"
-        show_help
-        exit 1
-        ;;
-esac
+main "$@"

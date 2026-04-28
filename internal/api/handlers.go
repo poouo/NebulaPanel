@@ -85,10 +85,11 @@ func handleNeedCaptcha(w http.ResponseWriter, r *http.Request) {
 
 func handleRegister(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Username  string `json:"username"`
-		Password  string `json:"password"`
-		CaptchaID string `json:"captcha_id"`
-		Captcha   string `json:"captcha"`
+		Username   string `json:"username"`
+		Password   string `json:"password"`    // legacy plaintext
+		ClientHash string `json:"client_hash"` // sha256(password) hex (preferred)
+		CaptchaID  string `json:"captcha_id"`
+		Captcha    string `json:"captcha"`
 	}
 	if err := parseJSON(r, &req); err != nil {
 		jsonError(w, "invalid request", http.StatusBadRequest)
@@ -108,15 +109,25 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(req.Username) < 3 || len(req.Password) < 6 {
-		jsonError(w, "username min 3 chars, password min 6 chars", http.StatusBadRequest)
+	if len(req.Username) < 3 {
+		jsonError(w, "username min 3 chars", http.StatusBadRequest)
 		return
 	}
 
-	hash, _ := auth.HashPassword(req.Password)
+	// Pick the credential to store. Prefer client-side SHA-256 hash so we never
+	// touch the plaintext password on the server side.
+	ch := strings.TrimSpace(req.ClientHash)
+	if ch == "" {
+		if len(req.Password) < 6 {
+			jsonError(w, "password min 6 chars", http.StatusBadRequest)
+			return
+		}
+		ch = auth.SHA256Hex(req.Password)
+	}
+	hash, _ := auth.HashClientHash(ch)
 	subToken := auth.GenerateSubToken()
 
-	_, err := db.DB.Exec(
+	res, err := db.DB.Exec(
 		`INSERT INTO users (username, password, role, sub_token) VALUES (?, ?, 'user', ?)`,
 		req.Username, hash, subToken)
 	if err != nil {
@@ -128,6 +139,9 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	newID, _ := res.LastInsertId()
+	_ = auth.SaveVerifier(int(newID), ch)
+
 	logger.Infof("Auth", "User registered: %s from %s", req.Username, getClientIP(r))
 	jsonOK(w, map[string]string{"message": "registered successfully"})
 }
@@ -136,10 +150,13 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 
 func handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Username  string `json:"username"`
-		Password  string `json:"password"`
-		CaptchaID string `json:"captcha_id"`
-		Captcha   string `json:"captcha"`
+		Username   string `json:"username"`
+		Password   string `json:"password"`     // legacy plaintext (fallback only)
+		ClientHash string `json:"client_hash"`  // sha256(password) hex (preferred)
+		Challenge  string `json:"challenge"`    // server-issued nonce (for HMAC mode)
+		Response   string `json:"response"`     // hmac-sha256(client_hash, challenge)
+		CaptchaID  string `json:"captcha_id"`
+		Captcha    string `json:"captcha"`
 	}
 	if err := parseJSON(r, &req); err != nil {
 		jsonError(w, "invalid request", http.StatusBadRequest)
@@ -170,7 +187,40 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !auth.CheckPassword(req.Password, hash) {
+	ok := false
+	// Mode A: HMAC challenge/response over sha256(password)
+	if req.Challenge != "" && req.Response != "" {
+		if auth.ConsumeChallenge(req.Challenge) {
+			stored := auth.LoadVerifier(id)
+			if stored != "" {
+				if auth.VerifyHMAC(stored, req.Challenge, req.Response) {
+					ok = true
+				}
+			}
+		}
+	}
+	// Mode B: client sent sha256(password) hex; verify against bcrypt hash
+	if !ok && req.ClientHash != "" {
+		if auth.CheckClientHash(req.ClientHash, hash) {
+			ok = true
+			// upgrade verifier so future logins can use Mode A
+			_ = auth.SaveVerifier(id, req.ClientHash)
+		}
+	}
+	// Mode C (legacy): plaintext password directly bcrypt-checked.
+	if !ok && req.Password != "" {
+		if auth.CheckPassword(req.Password, hash) {
+			ok = true
+			// migrate to client-hash chain transparently
+			ch := auth.SHA256Hex(req.Password)
+			if newHash, herr := auth.HashClientHash(ch); herr == nil {
+				db.DB.Exec("UPDATE users SET password=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", newHash, id)
+				_ = auth.SaveVerifier(id, ch)
+			}
+		}
+	}
+
+	if !ok {
 		captcha.RecordFail(ip)
 		logger.Warnf("Auth", "Login failed (wrong password): %s from %s", req.Username, ip)
 		need := captcha.NeedCaptcha(ip)
@@ -233,27 +283,39 @@ func handleMe(w http.ResponseWriter, r *http.Request) {
 func handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	uid, _ := strconv.Atoi(r.Header.Get("X-User-ID"))
 	var req struct {
-		OldPassword string `json:"old_password"`
-		NewPassword string `json:"new_password"`
+		OldPassword   string `json:"old_password"`
+		NewPassword   string `json:"new_password"`
+		OldClientHash string `json:"old_client_hash"`
+		NewClientHash string `json:"new_client_hash"`
 	}
 	if err := parseJSON(r, &req); err != nil {
 		jsonError(w, "invalid request", http.StatusBadRequest)
 		return
 	}
-	if len(req.NewPassword) < 6 {
-		jsonError(w, "password min 6 chars", http.StatusBadRequest)
-		return
+
+	oldCH := strings.TrimSpace(req.OldClientHash)
+	if oldCH == "" && req.OldPassword != "" {
+		oldCH = auth.SHA256Hex(req.OldPassword)
+	}
+	newCH := strings.TrimSpace(req.NewClientHash)
+	if newCH == "" {
+		if len(req.NewPassword) < 6 {
+			jsonError(w, "password min 6 chars", http.StatusBadRequest)
+			return
+		}
+		newCH = auth.SHA256Hex(req.NewPassword)
 	}
 
 	var hash string
 	db.DB.QueryRow("SELECT password FROM users WHERE id = ?", uid).Scan(&hash)
-	if !auth.CheckPassword(req.OldPassword, hash) {
+	if !auth.CheckClientHash(oldCH, hash) && !auth.CheckPassword(req.OldPassword, hash) {
 		jsonError(w, "old password incorrect", http.StatusBadRequest)
 		return
 	}
 
-	newHash, _ := auth.HashPassword(req.NewPassword)
+	newHash, _ := auth.HashClientHash(newCH)
 	db.DB.Exec("UPDATE users SET password = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", newHash, uid)
+	_ = auth.SaveVerifier(uid, newCH)
 	logger.Infof("Auth", "User %d changed password", uid)
 	jsonOK(w, "password changed")
 }
@@ -312,7 +374,9 @@ func handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	if req.Role == "" {
 		req.Role = "user"
 	}
-	hash, _ := auth.HashPassword(req.Password)
+	// Always store bcrypt(SHA-256(plain)) so panel never persists plaintext.
+	ch := auth.SHA256Hex(req.Password)
+	hash, _ := auth.HashClientHash(ch)
 	subToken := auth.GenerateSubToken()
 
 	var expireAt interface{} = nil
@@ -333,6 +397,7 @@ func handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, _ := result.LastInsertId()
+	_ = auth.SaveVerifier(int(id), ch)
 	logger.Infof("Admin", "Created user: %s (id=%d)", req.Username, id)
 	jsonOK(w, map[string]interface{}{"id": id})
 }
@@ -361,9 +426,13 @@ func handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		args = append(args, *req.Username)
 	}
 	if req.Password != nil && *req.Password != "" {
-		hash, _ := auth.HashPassword(*req.Password)
+		ch := auth.SHA256Hex(*req.Password)
+		hash, _ := auth.HashClientHash(ch)
 		sets = append(sets, "password=?")
 		args = append(args, hash)
+		if uid, _ := strconv.Atoi(id); uid > 0 {
+			_ = auth.SaveVerifier(uid, ch)
+		}
 	}
 	if req.Role != nil {
 		sets = append(sets, "role=?")
@@ -425,7 +494,8 @@ func handleListNodes(w http.ResponseWriter, r *http.Request) {
 	rows, err := db.DB.Query(
 		`SELECT id, name, address, port, protocol, transport, tls,
 				COALESCE(tls_sni,''), COALESCE(uuid,''), alter_id,
-				COALESCE(extra_config,''), enabled, sort_order, created_at, updated_at
+				COALESCE(extra_config,''), enabled, sort_order,
+				COALESCE(agent_id,0), created_at, updated_at
 		 FROM nodes ORDER BY sort_order ASC, id ASC`)
 	if err != nil {
 		jsonError(w, err.Error(), http.StatusInternalServerError)
@@ -435,17 +505,19 @@ func handleListNodes(w http.ResponseWriter, r *http.Request) {
 
 	var nodes []map[string]interface{}
 	for rows.Next() {
-		var id, port, tls, alterID, enabled, sortOrder int
+		var id, port, tls, alterID, enabled, sortOrder, agentID int
 		var name, address, protocol, transport, tlsSNI, uuid, extraConfig string
 		var createdAt, updatedAt *string
 		rows.Scan(&id, &name, &address, &port, &protocol, &transport, &tls,
-			&tlsSNI, &uuid, &alterID, &extraConfig, &enabled, &sortOrder, &createdAt, &updatedAt)
+			&tlsSNI, &uuid, &alterID, &extraConfig, &enabled, &sortOrder,
+			&agentID, &createdAt, &updatedAt)
 		nodes = append(nodes, map[string]interface{}{
 			"id": id, "name": name, "address": address, "port": port,
 			"protocol": protocol, "transport": transport, "tls": tls,
 			"tls_sni": tlsSNI, "uuid": uuid, "alter_id": alterID,
 			"extra_config": extraConfig, "enabled": enabled,
-			"sort_order": sortOrder, "created_at": createdAt, "updated_at": updatedAt,
+			"sort_order": sortOrder, "agent_id": agentID,
+			"created_at": createdAt, "updated_at": updatedAt,
 		})
 	}
 	if nodes == nil {
@@ -467,6 +539,7 @@ func handleCreateNode(w http.ResponseWriter, r *http.Request) {
 		AlterID     int    `json:"alter_id"`
 		ExtraConfig string `json:"extra_config"`
 		SortOrder   int    `json:"sort_order"`
+		AgentID     int    `json:"agent_id"`
 	}
 	if err := parseJSON(r, &req); err != nil {
 		jsonError(w, "invalid request", http.StatusBadRequest)
@@ -483,10 +556,10 @@ func handleCreateNode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err := db.DB.Exec(
-		`INSERT INTO nodes (name, address, port, protocol, transport, tls, tls_sni, uuid, alter_id, extra_config, sort_order)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO nodes (name, address, port, protocol, transport, tls, tls_sni, uuid, alter_id, extra_config, sort_order, agent_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		req.Name, req.Address, req.Port, req.Protocol, req.Transport,
-		req.TLS, req.TLSSNI, req.UUID, req.AlterID, req.ExtraConfig, req.SortOrder)
+		req.TLS, req.TLSSNI, req.UUID, req.AlterID, req.ExtraConfig, req.SortOrder, req.AgentID)
 	if err != nil {
 		jsonError(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -508,6 +581,7 @@ func handleUpdateNode(w http.ResponseWriter, r *http.Request) {
 		"name": true, "address": true, "port": true, "protocol": true,
 		"transport": true, "tls": true, "tls_sni": true, "uuid": true,
 		"alter_id": true, "extra_config": true, "enabled": true, "sort_order": true,
+		"agent_id": true,
 	}
 
 	sets := []string{}
@@ -561,7 +635,9 @@ func handleToggleNode(w http.ResponseWriter, r *http.Request) {
 func handleListAgents(w http.ResponseWriter, r *http.Request) {
 	rows, err := db.DB.Query(
 		`SELECT id, name, host, port, status, COALESCE(version,''),
-				cpu_usage, mem_usage, net_in, net_out, uptime, last_heartbeat, created_at
+				cpu_usage, mem_usage, net_in, net_out, uptime,
+				COALESCE(remark,''), COALESCE(entry_ip,''),
+				last_heartbeat, created_at
 		 FROM agents ORDER BY id ASC`)
 	if err != nil {
 		jsonError(w, err.Error(), http.StatusInternalServerError)
@@ -575,15 +651,21 @@ func handleListAgents(w http.ResponseWriter, r *http.Request) {
 		var netIn, netOut int64
 		var uptime int
 		var cpuUsage, memUsage float64
-		var name, host, status, version string
+		var name, host, status, version, remark, entryIP string
 		var lastHB, createdAt *string
 		rows.Scan(&id, &name, &host, &port, &status, &version,
-			&cpuUsage, &memUsage, &netIn, &netOut, &uptime, &lastHB, &createdAt)
+			&cpuUsage, &memUsage, &netIn, &netOut, &uptime,
+			&remark, &entryIP, &lastHB, &createdAt)
+		displayIP := entryIP
+		if displayIP == "" {
+			displayIP = host
+		}
 		agents = append(agents, map[string]interface{}{
 			"id": id, "name": name, "host": host, "port": port,
 			"status": status, "version": version,
 			"cpu_usage": cpuUsage, "mem_usage": memUsage,
 			"net_in": netIn, "net_out": netOut, "uptime": uptime,
+			"remark": remark, "entry_ip": entryIP, "display_ip": displayIP,
 			"last_heartbeat": lastHB, "created_at": createdAt,
 		})
 	}
@@ -809,7 +891,12 @@ func handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 			 WHERE host=?`,
 			hb.Hostname, hb.CPU, hb.Mem, hb.NetIn, hb.NetOut, hb.Uptime, hb.Version, hb.Host)
 	}
-	respData, _ := crypto.Encrypt([]byte(`{"status":"ok"}`), commKey)
+	// Resolve agent id (existing or just inserted)
+	if agentID == 0 {
+		db.DB.QueryRow("SELECT id FROM agents WHERE host=?", hb.Host).Scan(&agentID)
+	}
+	respBody := buildAgentSpec(agentID)
+	respData, _ := crypto.Encrypt(respBody, commKey)
 	jsonOK(w, map[string]string{"data": respData})
 }
 

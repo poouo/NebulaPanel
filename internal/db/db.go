@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -32,36 +33,28 @@ func Init(dbPath string) {
 			log.Fatalf("Failed to ping database: %v", err)
 		}
 		migrate()
+		alter()
 		log.Println("[DB] Database initialized successfully")
 	})
 }
 
 func migrate() {
 	tables := []string{
-		// ── 用户表：含流量限制、速率限制、到期时间、流量重置周期 ──
+		// ── 用户表 ──
 		`CREATE TABLE IF NOT EXISTS users (
 			id              INTEGER PRIMARY KEY AUTOINCREMENT,
 			username        TEXT UNIQUE NOT NULL,
 			password        TEXT NOT NULL,
 			role            TEXT NOT NULL DEFAULT 'user',
-
-			-- 流量（单位 Bytes）
 			traffic_up      INTEGER NOT NULL DEFAULT 0,
 			traffic_down    INTEGER NOT NULL DEFAULT 0,
 			traffic_limit   INTEGER NOT NULL DEFAULT 0,
-
-			-- 速率限制（单位 Mbps，0=不限）
 			speed_limit     INTEGER NOT NULL DEFAULT 0,
-
-			-- 到期 & 重置
 			expire_at       TEXT,
 			reset_day       INTEGER NOT NULL DEFAULT 0,
 			last_reset_at   TEXT,
-
-			-- 订阅
 			sub_token       TEXT UNIQUE,
 			enabled         INTEGER NOT NULL DEFAULT 1,
-
 			created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
@@ -81,11 +74,12 @@ func migrate() {
 			extra_config    TEXT,
 			enabled         INTEGER NOT NULL DEFAULT 1,
 			sort_order      INTEGER NOT NULL DEFAULT 0,
+			agent_id        INTEGER NOT NULL DEFAULT 0,
 			created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
 
-		// ── Agent 从机表 ──
+		// ── Agent 表 ──
 		`CREATE TABLE IF NOT EXISTS agents (
 			id              INTEGER PRIMARY KEY AUTOINCREMENT,
 			name            TEXT NOT NULL,
@@ -98,6 +92,8 @@ func migrate() {
 			net_in          INTEGER DEFAULT 0,
 			net_out         INTEGER DEFAULT 0,
 			uptime          INTEGER DEFAULT 0,
+			remark          TEXT    DEFAULT '',
+			entry_ip        TEXT    DEFAULT '',
 			last_heartbeat  DATETIME,
 			created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -123,7 +119,7 @@ func migrate() {
 			FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
 		)`,
 
-		// ── 流量记录（按小时聚合，用于趋势图） ──
+		// ── 流量记录 ──
 		`CREATE TABLE IF NOT EXISTS traffic_logs (
 			id          INTEGER PRIMARY KEY AUTOINCREMENT,
 			user_id     INTEGER NOT NULL,
@@ -149,11 +145,20 @@ func migrate() {
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
 
-		// ── 索引 ──
+		// ── 审计规则表（默认关闭，下发到 Agent 阻断指定网址） ──
+		`CREATE TABLE IF NOT EXISTS audit_rules (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			domain      TEXT NOT NULL,
+			remark      TEXT DEFAULT '',
+			enabled     INTEGER NOT NULL DEFAULT 1,
+			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+
 		`CREATE INDEX IF NOT EXISTS idx_logs_created_at ON logs(created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_users_sub_token ON users(sub_token)`,
 		`CREATE INDEX IF NOT EXISTS idx_traffic_logs_user ON traffic_logs(user_id, record_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_traffic_logs_time ON traffic_logs(record_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_nodes_agent ON nodes(agent_id)`,
 	}
 	for _, t := range tables {
 		if _, err := DB.Exec(t); err != nil {
@@ -161,6 +166,57 @@ func migrate() {
 		}
 	}
 	log.Println("[DB] Migration completed")
+}
+
+// alter performs idempotent ALTER TABLE for columns added in newer versions.
+func alter() {
+	type col struct {
+		Table, Name, DDL string
+	}
+	cols := []col{
+		{"agents", "remark", "ALTER TABLE agents ADD COLUMN remark TEXT DEFAULT ''"},
+		{"agents", "entry_ip", "ALTER TABLE agents ADD COLUMN entry_ip TEXT DEFAULT ''"},
+		{"nodes", "agent_id", "ALTER TABLE nodes ADD COLUMN agent_id INTEGER NOT NULL DEFAULT 0"},
+	}
+	for _, c := range cols {
+		if !columnExists(c.Table, c.Name) {
+			if _, err := DB.Exec(c.DDL); err != nil && !strings.Contains(err.Error(), "duplicate") {
+				log.Printf("[DB] alter %s.%s warning: %v", c.Table, c.Name, err)
+			}
+		}
+	}
+
+	// default settings
+	defaults := map[string]string{
+		"audit_enabled":  "false",
+		"github_url":     "https://github.com/poouo/NebulaPanel",
+	}
+	for k, v := range defaults {
+		var val string
+		if err := DB.QueryRow("SELECT value FROM settings WHERE key=?", k).Scan(&val); err != nil {
+			DB.Exec("INSERT INTO settings (key, value) VALUES (?, ?)", k, v)
+		}
+	}
+}
+
+func columnExists(table, col string) bool {
+	rows, err := DB.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err == nil {
+			if strings.EqualFold(name, col) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func Close() {
@@ -175,7 +231,7 @@ func Close() {
 
 func ExportAll() (map[string]interface{}, error) {
 	result := make(map[string]interface{})
-	tableNames := []string{"users", "nodes", "agents", "sub_templates", "user_nodes", "settings", "traffic_logs", "logs"}
+	tableNames := []string{"users", "nodes", "agents", "sub_templates", "user_nodes", "settings", "traffic_logs", "logs", "audit_rules"}
 	for _, table := range tableNames {
 		rows, err := DB.Query(fmt.Sprintf("SELECT * FROM %s", table))
 		if err != nil {
@@ -214,7 +270,7 @@ func ImportAll(data map[string]interface{}) error {
 	}
 	defer tx.Rollback()
 
-	orderedTables := []string{"settings", "users", "nodes", "sub_templates", "agents", "user_nodes", "traffic_logs", "logs"}
+	orderedTables := []string{"settings", "users", "nodes", "sub_templates", "agents", "user_nodes", "traffic_logs", "logs", "audit_rules"}
 	for _, table := range orderedTables {
 		tx.Exec(fmt.Sprintf("DELETE FROM %s", table))
 	}

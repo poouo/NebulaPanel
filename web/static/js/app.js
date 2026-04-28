@@ -16,8 +16,15 @@ zh: {
   leave_empty_keep: '（留空保持不变）',
   // Nav
   dashboard: '仪表盘', traffic: '流量统计', users: '用户管理', nodes: '节点管理',
-  agents: 'Agent管理', templates: '订阅模板', settings: '系统设置', logs: '系统日志',
-  logout: '退出登录',
+  agents: 'Agent管理', templates: '订阅模板', audit: '审计管理', settings: '系统设置', logs: '系统日志',
+  logout: '退出登录', open_source: '本项目开源地址',
+  remark: '备注', entry_ip: '入口 IP', entry_ip_default: '默认使用上报 IP',
+  audit_enabled_label: '全局审计开关', audit_off_default: '默认关闭',
+  add_audit: '添加屏蔽规则', edit_audit: '编辑规则', domain: '域名/关键字',
+  audit_hint: '规则会以加密信道下发到 Agent，由内核实现路由阫断。支持填写“example.com”、“domain:bad.com”、“regexp:^.*tracker.*$”。',
+  confirm_delete_audit: '确定删除该审计规则？', audit_deleted: '规则已删除',
+  audit_created: '规则已添加', audit_updated: '规则已更新',
+  belongs_to_agent: '所属 Agent', no_agent: '未指定',
   // Dashboard
   upload: '上行流量', download: '下行流量', traffic_used_limit: '已用 / 限额',
   unlimited: '无限制', expire: '到期时间', never: '永不过期', speed_limit: '速率限制',
@@ -87,8 +94,15 @@ en: {
   welcome_back: 'Welcome back, ',
   leave_empty_keep: '(leave empty to keep)',
   dashboard: 'Dashboard', traffic: 'Traffic', users: 'Users', nodes: 'Nodes',
-  agents: 'Agents', templates: 'Templates', settings: 'Settings', logs: 'Logs',
-  logout: 'Logout',
+  agents: 'Agents', templates: 'Templates', audit: 'Audit', settings: 'Settings', logs: 'Logs',
+  logout: 'Logout', open_source: 'Open Source Project',
+  remark: 'Remark', entry_ip: 'Entry IP', entry_ip_default: 'Defaults to reported IP',
+  audit_enabled_label: 'Global Audit Switch', audit_off_default: 'Disabled by default',
+  add_audit: 'Add Block Rule', edit_audit: 'Edit Rule', domain: 'Domain / Keyword',
+  audit_hint: 'Rules are pushed to agents via the encrypted channel and enforced by the proxy core. Supports plain domains, "domain:bad.com" and "regexp:^.*tracker.*$".',
+  confirm_delete_audit: 'Delete this audit rule?', audit_deleted: 'Rule deleted',
+  audit_created: 'Rule added', audit_updated: 'Rule updated',
+  belongs_to_agent: 'Agent', no_agent: 'Unassigned',
   upload: 'Upload', download: 'Download', traffic_used_limit: 'Used / Limit',
   unlimited: 'Unlimited', expire: 'Expire', never: 'Never', speed_limit: 'Speed Limit',
   no_speed_limit: 'No speed limit', total_users: 'Total Users', total_nodes: 'Total Nodes',
@@ -211,6 +225,23 @@ function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+// ── Web Crypto helpers (used to never send plaintext password) ──
+async function sha256Hex(text){
+  const data = new TextEncoder().encode(text);
+  const buf  = await crypto.subtle.digest('SHA-256', data);
+  return [...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+async function hmacSha256Hex(keyHex, msg){
+  // keyHex is hex of sha256(password); use raw bytes of that hex string as HMAC key
+  // (interop with server which derives expected response from stored client_hash hex)
+  const enc = new TextEncoder();
+  const keyBytes = enc.encode(keyHex);
+  const key = await crypto.subtle.importKey('raw', keyBytes,
+    { name:'HMAC', hash:'SHA-256' }, false, ['sign']);
+  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(msg));
+  return [...new Uint8Array(sig)].map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+
 // ── Icons ──
 const icons = {
   dashboard: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>',
@@ -298,11 +329,24 @@ function renderLogin(app) {
     const pass = document.getElementById('authPass').value;
     const cap = document.getElementById('authCaptcha')?.value?.trim() || '';
     try {
+      // Hash password client-side so plaintext never touches the wire / server.
+      const clientHash = await sha256Hex(pass);
       if (isReg) {
-        await api('POST', '/api/register', {username:user, password:pass, captcha_id:captchaId, captcha:cap});
+        await api('POST', '/api/register', {username:user, client_hash:clientHash, captcha_id:captchaId, captcha:cap});
         toast(t('reg_success'), 'success'); loginMode = 'login'; render();
       } else {
-        const d = await api('POST', '/api/login', {username:user, password:pass, captcha_id:captchaId, captcha:cap});
+        // Try challenge/response first; server falls back to client_hash if no verifier yet.
+        let challenge = '', response = '';
+        try {
+          const c = await api('GET', '/api/login/challenge?username=' + encodeURIComponent(user));
+          challenge = c.challenge;
+          response  = await hmacSha256Hex(clientHash, challenge);
+        } catch(_){ /* old server, ignore */ }
+        const payload = {
+          username:user, client_hash:clientHash, captcha_id:captchaId, captcha:cap,
+          challenge, response,
+        };
+        const d = await api('POST', '/api/login', payload);
         setAuth(d.token, d.role, d.username);
         toast(t('welcome_back') + d.username, 'success'); state.page = 'dashboard'; render();
       }
@@ -332,6 +376,7 @@ function renderApp(app) {
       {id:'users', label:t('users'), icon:icons.users},
       {id:'nodes', label:t('nodes'), icon:icons.nodes},
       {id:'agents', label:t('agents'), icon:icons.agents},
+      {id:'audit', label:t('audit'), icon:icons.logs},
       {id:'templates', label:t('templates'), icon:icons.templates},
       {id:'settings', label:t('settings'), icon:icons.settings},
       {id:'logs', label:t('logs'), icon:icons.logs},
@@ -350,6 +395,7 @@ function renderApp(app) {
           <button class="lang-toggle-btn" id="langBtn">${state.lang==='zh' ? 'EN' : '中文'}</button>
         </div>
         <a href="#" id="logoutBtn" style="color:var(--danger);display:flex;align-items:center;gap:6px;margin-top:10px">${icons.logout}<span>${t('logout')}</span></a>
+        <a href="https://github.com/poouo/NebulaPanel" target="_blank" rel="noopener" style="color:var(--text-dim);font-size:12px;display:block;margin-top:10px;text-decoration:none">${t('open_source')} →</a>
       </div>
     </aside>
     <main class="main" id="mainContent"><div class="loading"><div class="spinner"></div></div></main>
@@ -374,6 +420,7 @@ async function loadPage(page) {
       case 'nodes': await renderNodes(main); break;
       case 'agents': await renderAgents(main); break;
       case 'templates': await renderTemplates(main); break;
+      case 'audit': await renderAudit(main); break;
       case 'settings': await renderSettings(main); break;
       case 'logs': await renderLogs(main); break;
       default: main.innerHTML = '<div class="empty">' + t('page_not_found') + '</div>';
@@ -576,10 +623,12 @@ window.toggleNode = async (id) => { await api('PUT', '/api/nodes/' + id + '/togg
 window.editNode = async (id) => { const nodes = await api('GET', '/api/nodes'); const n = nodes.find(x => x.id === id); if (n) showNodeModal(n); };
 window.deleteNode = async (id) => { if (!confirm(t('confirm_delete_node'))) return; await api('DELETE', '/api/nodes/' + id); toast(t('node_deleted'), 'success'); loadPage('nodes'); };
 
-function showNodeModal(node) {
+async function showNodeModal(node) {
   const isEdit = !!node;
   const protocols = ['vmess','vless','trojan','ss','hysteria2'];
   const transports = ['tcp','ws','grpc','h2','quic'];
+  let agentList = [];
+  try { agentList = await api('GET', '/api/agents') || []; } catch(_) { agentList = []; }
   let html = `<div class="modal-overlay" id="modalOverlay"><div class="modal">
     <div class="modal-header"><h3>${isEdit?t('edit_node'):t('add_node')}</h3><button class="btn-icon" onclick="closeModal()">&times;</button></div>
     <div class="modal-body"><form id="nodeForm">
@@ -600,6 +649,10 @@ function showNodeModal(node) {
         <div class="form-group"><label>${t('tls')}</label><select class="form-control" id="nTLS"><option value="0" ${isEdit&&!node.tls?'selected':''}>Off</option><option value="1" ${isEdit&&node.tls?'selected':''}>On</option></select></div>
         <div class="form-group"><label>${t('tls_sni')}</label><input class="form-control" id="nSNI" value="${isEdit?escHtml(node.tls_sni):''}"></div>
       </div>
+      <div class="form-group"><label>${t('belongs_to_agent')}</label><select class="form-control" id="nAgent">
+        <option value="0">${t('no_agent')}</option>
+        ${agentList.map(a => `<option value="${a.id}" ${isEdit&&node.agent_id===a.id?'selected':''}>${escHtml(a.name)} (${escHtml(a.display_ip||a.host)})</option>`).join('')}
+      </select></div>
       <div class="form-group"><label>${t('extra_config')}</label><textarea class="form-control" id="nExtra">${isEdit?escHtml(node.extra_config):''}</textarea></div>
       <div class="form-group"><label>${t('sort_order')}</label><input class="form-control" id="nSort" type="number" value="${isEdit?node.sort_order:0}"></div>
     </form></div>
@@ -607,7 +660,7 @@ function showNodeModal(node) {
   </div></div>`;
   document.body.insertAdjacentHTML('beforeend', html);
   document.getElementById('saveNodeBtn').onclick = async () => {
-    const data = { name: document.getElementById('nName').value.trim(), address: document.getElementById('nAddr').value.trim(), port: parseInt(document.getElementById('nPort').value), protocol: document.getElementById('nProto').value, transport: document.getElementById('nTrans').value, uuid: document.getElementById('nUUID').value.trim(), alter_id: parseInt(document.getElementById('nAltID').value), tls: parseInt(document.getElementById('nTLS').value), tls_sni: document.getElementById('nSNI').value.trim(), extra_config: document.getElementById('nExtra').value.trim(), sort_order: parseInt(document.getElementById('nSort').value) };
+    const data = { name: document.getElementById('nName').value.trim(), address: document.getElementById('nAddr').value.trim(), port: parseInt(document.getElementById('nPort').value), protocol: document.getElementById('nProto').value, transport: document.getElementById('nTrans').value, uuid: document.getElementById('nUUID').value.trim(), alter_id: parseInt(document.getElementById('nAltID').value), tls: parseInt(document.getElementById('nTLS').value), tls_sni: document.getElementById('nSNI').value.trim(), extra_config: document.getElementById('nExtra').value.trim(), sort_order: parseInt(document.getElementById('nSort').value), agent_id: parseInt(document.getElementById('nAgent').value) };
     try {
       if (isEdit) await api('PUT', '/api/nodes/' + node.id, data); else await api('POST', '/api/nodes', data);
       toast(isEdit?t('node_updated'):t('node_created'), 'success'); closeModal(); loadPage('nodes');
@@ -622,17 +675,20 @@ async function renderAgents(el) {
     <button class="btn btn-primary" id="showScriptBtn">${t('install_script')}</button>
   </div></div>`;
   html += `<div class="card"><div class="table-wrap"><table>
-    <thead><tr><th>ID</th><th>${t('name')}</th><th>${t('host')}</th><th>${t('status')}</th><th>${t('cpu')}</th><th>${t('memory')}</th><th>${t('net_in_out')}</th><th>${t('uptime')}</th><th>${t('last_hb')}</th><th>${t('actions')}</th></tr></thead>
+    <thead><tr><th>ID</th><th>${t('name')}</th><th>${t('host')}</th><th>${t('entry_ip')}</th><th>${t('remark')}</th><th>${t('status')}</th><th>${t('cpu')}</th><th>${t('memory')}</th><th>${t('net_in_out')}</th><th>${t('uptime')}</th><th>${t('last_hb')}</th><th>${t('actions')}</th></tr></thead>
     <tbody>${agents.map(a => `<tr>
       <td>${a.id}</td><td>${escHtml(a.name)}</td><td>${escHtml(a.host)}:${a.port}</td>
+      <td>${escHtml(a.display_ip||a.entry_ip||a.host)}${a.entry_ip?'':` <span style="color:var(--text-dim);font-size:11px">(${t('entry_ip_default')})</span>`}</td>
+      <td>${escHtml(a.remark||'')}</td>
       <td><span class="badge badge-${a.status==='online'?'success':'danger'}">${a.status==='online'?t('online'):t('offline')}</span></td>
       <td>${a.cpu_usage.toFixed(1)}%</td><td>${a.mem_usage.toFixed(1)}%</td>
       <td>${formatBytes(a.net_in)} / ${formatBytes(a.net_out)}</td>
       <td>${a.uptime > 0 ? Math.floor(a.uptime/3600)+'h' : '-'}</td>
       <td style="font-size:12px">${a.last_heartbeat||'-'}</td>
       <td><div class="btn-group">
+        <button class="btn btn-sm btn-outline" onclick="editAgent(${a.id})">${t('edit')}</button>
         <button class="btn btn-sm btn-danger" onclick="deleteAgent(${a.id})">${t('del')}</button>
-      </div></td></tr>`).join('')}${agents.length===0?`<tr><td colspan="10" class="empty">${t('no_data')}</td></tr>`:''}</tbody></table></div></div>`;
+      </div></td></tr>`).join('')}${agents.length===0?`<tr><td colspan="12" class="empty">${t('no_data')}</td></tr>`:''}</tbody></table></div></div>`;
   el.innerHTML = html;
   document.getElementById('showScriptBtn').onclick = async () => {
     // 获取真实的通信密钥
@@ -641,7 +697,7 @@ async function renderAgents(el) {
       const settings = await api('GET', '/api/settings');
       commKey = settings.comm_key || '';
     } catch(e) { commKey = 'YOUR_COMM_KEY'; }
-    const ghUrl = 'https://raw.githubusercontent.com/poouo/NebulaPanel/main/agent/install.sh';
+    const ghUrl = 'https://raw.githubusercontent.com/poouo/NebulaPanel/main/web/static/agent/install.sh';
     const panelUrl = location.origin;
     const installCmd = `bash <(curl -sL --connect-timeout 15 ${ghUrl} || curl -sL ${panelUrl}/static/agent/install.sh) install ${panelUrl} ${commKey}`;
     const uninstallCmd = `bash <(curl -sL --connect-timeout 15 ${ghUrl} || curl -sL ${panelUrl}/static/agent/install.sh) uninstall`;
@@ -671,6 +727,93 @@ async function renderAgents(el) {
   };
 }
 window.deleteAgent = async (id) => { if (!confirm(t('confirm_delete_agent'))) return; await api('DELETE', '/api/agents/' + id); toast(t('agent_deleted'), 'success'); loadPage('agents'); };
+window.editAgent = async (id) => {
+  const list = await api('GET', '/api/agents');
+  const a = list.find(x => x.id === id);
+  if (!a) return;
+  let html = `<div class="modal-overlay" id="modalOverlay"><div class="modal">
+    <div class="modal-header"><h3>${t('edit_agent')}</h3><button class="btn-icon" onclick="closeModal()">&times;</button></div>
+    <div class="modal-body">
+      <div class="form-group"><label>${t('name')}</label><input class="form-control" id="agName" value="${escHtml(a.name)}"></div>
+      <div class="form-group"><label>${t('entry_ip')}</label><input class="form-control" id="agEntryIP" placeholder="${escHtml(a.host)}" value="${escHtml(a.entry_ip||'')}"></div>
+      <p style="font-size:12px;color:var(--text-dim);margin-top:-8px;margin-bottom:14px">${t('entry_ip_default')}</p>
+      <div class="form-group"><label>${t('remark')}</label><textarea class="form-control" id="agRemark" rows="3">${escHtml(a.remark||'')}</textarea></div>
+    </div>
+    <div class="modal-footer"><button class="btn btn-outline" onclick="closeModal()">${t('cancel')}</button><button class="btn btn-primary" id="saveAgentBtn">${t('save')}</button></div>
+  </div></div>`;
+  document.body.insertAdjacentHTML('beforeend', html);
+  document.getElementById('saveAgentBtn').onclick = async () => {
+    const data = {
+      name: document.getElementById('agName').value.trim(),
+      entry_ip: document.getElementById('agEntryIP').value.trim(),
+      remark: document.getElementById('agRemark').value,
+    };
+    try { await api('PUT', '/api/agents/' + id, data); toast(t('agent_updated'), 'success'); closeModal(); loadPage('agents'); }
+    catch(e) { toast(e.message, 'error'); }
+  };
+};
+
+// ── Audit page ──
+async function renderAudit(el){
+  const settings = await api('GET', '/api/settings');
+  const rules = await api('GET', '/api/audit/rules');
+  const auditOn = (settings.audit_enabled === 'true');
+  let html = `<div class="topbar"><h2>${t('audit')}</h2><button class="btn btn-primary" id="addAuditBtn">+ ${t('add_audit')}</button></div>`;
+  html += `<div class="card"><div class="card-header"><h3>${t('audit_enabled_label')}</h3></div>
+    <div class="form-group"><select class="form-control" id="auditSwitch">
+      <option value="false" ${!auditOn?'selected':''}>${t('disabled')} (${t('audit_off_default')})</option>
+      <option value="true" ${auditOn?'selected':''}>${t('enabled')}</option>
+    </select></div>
+    <p style="font-size:12px;color:var(--text-dim)">${t('audit_hint')}</p>
+    <button class="btn btn-primary" id="saveAuditSwitch">${t('save')}</button>
+  </div>`;
+  html += `<div class="card"><div class="table-wrap"><table>
+    <thead><tr><th>ID</th><th>${t('domain')}</th><th>${t('remark')}</th><th>${t('status')}</th><th>${t('actions')}</th></tr></thead>
+    <tbody>${rules.map(r => `<tr>
+      <td>${r.id}</td><td>${escHtml(r.domain)}</td><td>${escHtml(r.remark||'')}</td>
+      <td><span class="badge badge-${r.enabled?'success':'danger'}">${r.enabled?t('enabled'):t('disabled')}</span></td>
+      <td><div class="btn-group">
+        <button class="btn btn-sm btn-outline" onclick="editAudit(${r.id})">${t('edit')}</button>
+        <button class="btn btn-sm btn-danger" onclick="deleteAudit(${r.id})">${t('del')}</button>
+      </div></td></tr>`).join('')}${rules.length===0?`<tr><td colspan="5" class="empty">${t('no_data')}</td></tr>`:''}</tbody></table></div></div>`;
+  el.innerHTML = html;
+  document.getElementById('saveAuditSwitch').onclick = async () => {
+    const v = document.getElementById('auditSwitch').value;
+    await api('PUT', '/api/settings', { audit_enabled: v });
+    toast(t('settings_saved'), 'success');
+  };
+  document.getElementById('addAuditBtn').onclick = () => showAuditModal();
+}
+window.editAudit = async (id) => { const rules = await api('GET','/api/audit/rules'); const r = rules.find(x => x.id === id); if (r) showAuditModal(r); };
+window.deleteAudit = async (id) => { if (!confirm(t('confirm_delete_audit'))) return; await api('DELETE', '/api/audit/rules/' + id); toast(t('audit_deleted'), 'success'); loadPage('audit'); };
+function showAuditModal(rule){
+  const isEdit = !!rule;
+  let html = `<div class="modal-overlay" id="modalOverlay"><div class="modal">
+    <div class="modal-header"><h3>${isEdit?t('edit_audit'):t('add_audit')}</h3><button class="btn-icon" onclick="closeModal()">&times;</button></div>
+    <div class="modal-body">
+      <div class="form-group"><label>${t('domain')}</label><input class="form-control" id="arDomain" value="${isEdit?escHtml(rule.domain):''}" placeholder="example.com / domain:bad.com / regexp:^.*tracker.*$"></div>
+      <div class="form-group"><label>${t('remark')}</label><input class="form-control" id="arRemark" value="${isEdit?escHtml(rule.remark||''):''}"></div>
+      <div class="form-group"><label>${t('status')}</label><select class="form-control" id="arEnabled">
+        <option value="1" ${isEdit&&!rule.enabled?'':'selected'}>${t('enabled')}</option>
+        <option value="0" ${isEdit&&!rule.enabled?'selected':''}>${t('disabled')}</option>
+      </select></div>
+      <p style="font-size:12px;color:var(--text-dim)">${t('audit_hint')}</p>
+    </div>
+    <div class="modal-footer"><button class="btn btn-outline" onclick="closeModal()">${t('cancel')}</button><button class="btn btn-primary" id="saveAuditBtn">${t('save')}</button></div>
+  </div></div>`;
+  document.body.insertAdjacentHTML('beforeend', html);
+  document.getElementById('saveAuditBtn').onclick = async () => {
+    const data = {
+      domain: document.getElementById('arDomain').value.trim(),
+      remark: document.getElementById('arRemark').value.trim(),
+      enabled: parseInt(document.getElementById('arEnabled').value),
+    };
+    try {
+      if (isEdit) await api('PUT', '/api/audit/rules/' + rule.id, data); else await api('POST', '/api/audit/rules', data);
+      toast(isEdit?t('audit_updated'):t('audit_created'), 'success'); closeModal(); loadPage('audit');
+    } catch(e) { toast(e.message, 'error'); }
+  };
+}
 
 // ── Templates ──
 async function renderTemplates(el) {

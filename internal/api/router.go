@@ -15,6 +15,7 @@ func NewRouter() http.Handler {
 	mux.HandleFunc("POST /api/register", handleRegister)
 	mux.HandleFunc("GET /api/captcha", handleCaptcha)
 	mux.HandleFunc("GET /api/login/need-captcha", handleNeedCaptcha)
+	mux.HandleFunc("GET /api/login/challenge", handleLoginChallenge)
 	mux.HandleFunc("GET /api/sub/{token}", handleSubscription)
 	mux.HandleFunc("GET /api/settings/public", handleGetPublicSettings)
 
@@ -42,7 +43,14 @@ func NewRouter() http.Handler {
 
 	// Agent 管理 (admin)
 	mux.HandleFunc("GET /api/agents", adminWrap(handleListAgents))
+	mux.HandleFunc("PUT /api/agents/{id}", adminWrap(handleUpdateAgentMeta))
 	mux.HandleFunc("DELETE /api/agents/{id}", adminWrap(handleDeleteAgent))
+
+	// 审计规则 (admin)
+	mux.HandleFunc("GET /api/audit/rules", adminWrap(handleListAuditRules))
+	mux.HandleFunc("POST /api/audit/rules", adminWrap(handleCreateAuditRule))
+	mux.HandleFunc("PUT /api/audit/rules/{id}", adminWrap(handleUpdateAuditRule))
+	mux.HandleFunc("DELETE /api/audit/rules/{id}", adminWrap(handleDeleteAuditRule))
 
 	// 订阅模板 (admin)
 	mux.HandleFunc("GET /api/templates", adminWrap(handleListTemplates))
