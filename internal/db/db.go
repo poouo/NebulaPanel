@@ -34,6 +34,7 @@ func Init(dbPath string) {
 		}
 		migrate()
 		alter()
+		createIndexes()
 		log.Println("[DB] Database initialized successfully")
 	})
 }
@@ -154,11 +155,6 @@ func migrate() {
 			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_logs_created_at ON logs(created_at)`,
-		`CREATE INDEX IF NOT EXISTS idx_users_sub_token ON users(sub_token)`,
-		`CREATE INDEX IF NOT EXISTS idx_traffic_logs_user ON traffic_logs(user_id, record_at)`,
-		`CREATE INDEX IF NOT EXISTS idx_traffic_logs_time ON traffic_logs(record_at)`,
-		`CREATE INDEX IF NOT EXISTS idx_nodes_agent ON nodes(agent_id)`,
 	}
 	for _, t := range tables {
 		if _, err := DB.Exec(t); err != nil {
@@ -166,6 +162,26 @@ func migrate() {
 		}
 	}
 	log.Println("[DB] Migration completed")
+}
+
+// createIndexes runs after migrate() + alter(), so that columns added to old
+// databases by ALTER TABLE are already present when we reference them.
+// Any single failure here is logged as a warning rather than being fatal,
+// because indexes are purely for performance and we never want a stale
+// index definition to block the panel from starting up.
+func createIndexes() {
+	indexes := []string{
+		`CREATE INDEX IF NOT EXISTS idx_logs_created_at  ON logs(created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_users_sub_token  ON users(sub_token)`,
+		`CREATE INDEX IF NOT EXISTS idx_traffic_logs_user ON traffic_logs(user_id, record_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_traffic_logs_time ON traffic_logs(record_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_nodes_agent       ON nodes(agent_id)`,
+	}
+	for _, q := range indexes {
+		if _, err := DB.Exec(q); err != nil {
+			log.Printf("[DB] index warning: %v (sql=%s)", err, q)
+		}
+	}
 }
 
 // alter performs idempotent ALTER TABLE for columns added in newer versions.
